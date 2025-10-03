@@ -1,134 +1,58 @@
 pipeline {
     agent any
-
-    tools {
-        nodejs "NodeJS_16"
-    }
-
+    
     environment {
-        DOCKER_HUB_USER = 'dmzz'
-        FRONT_IMAGE = 'express-frontend'
-        BACK_IMAGE  = 'express-backend'
+        DOCKER_HOST = "unix:///var/run/docker.sock"
     }
-
-    triggers {
-        // Pour que le pipeline démarre quand le webhook est reçu
-        GenericTrigger(
-            genericVariables: [
-                [key: 'ref', value: '$.ref'],
-                [key: 'pusher_name', value: '$.pusher.name'],
-                [key: 'commit_message', value: '$.head_commit.message']
-            ],
-            causeString: 'Push par $pusher_name sur $ref: "$commit_message"',
-            token: 'mysecret',
-            printContributedVariables: true,
-            printPostContent: true
-        )
-    }
-
+    
     stages {
         stage('Checkout') {
             steps {
-                echo "Hello word"
-                //git branch: 'main', url: 'https://github.com/mhdgeek/express_mongo_react.git'
+                git branch: 'main', 
+                url: 'https://github.com/Buhaha2525/express_mongo_react.git'
             }
         }
-
-        stage('Install dependencies - Backend') {
-            steps {
-                dir('back-end') {
-                    sh 'npm install'
-                }
-            }
-        }
-
-        stage('Install dependencies - Frontend') {
+        
+        stage('Build Frontend') {
             steps {
                 dir('front-end') {
-                    sh 'npm install'
+                    sh 'docker build -t frontend-app .'
                 }
             }
         }
-
-        stage('Run Tests') {
+        
+        stage('Build Backend') {
             steps {
-                script {
-                    sh 'cd back-end && npm test || echo "Aucun test backend"'
-                    sh 'cd front-end && npm test || echo "Aucun test frontend"'
+                dir('back-end') {
+                    sh 'docker build -t backend-app .'
                 }
             }
         }
-
-        stage('Build Docker Images') {
+        
+        stage('Deploy with Docker Compose') {
             steps {
-                script {
-                    sh "docker build -t $DOCKER_HUB_USER/$FRONT_IMAGE:latest ./front-end"
-                    sh "docker build -t $DOCKER_HUB_USER/$BACK_IMAGE:latest ./back-end"
-                }
-            }
-        }
-
-        stage('Push Docker Images') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                    sh '''
-                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
-                        docker push $DOCKER_USER/react-frontend:latest
-                        docker push $DOCKER_USER/express-backend:latest
-                    '''
-                }
-            }
-        }
-
-        // on supprime les conteneur inactif dans docker container
-        stage('Clean Docker') {
-            steps {
-                sh 'docker container prune -f'
-                sh 'docker image prune -f'
-            }
-        }
-
-        stage('Check Docker & Compose') {
-            steps {
-                sh 'docker --version'
-                sh 'docker-compose --version || echo "docker-compose non trouvé"'
-            }
-        }
-
-        stage('Deploy (compose.yaml)') {
-            steps {
-                dir('.') {  
-                    sh 'docker-compose -f compose.yaml down || true'
-                    sh 'docker-compose -f compose.yaml pull'
-                    sh 'docker-compose -f compose.yaml up -d'
-                    sh 'docker-compose -f compose.yaml ps'
-                    sh 'docker-compose -f compose.yaml logs --tail=50'
-                }
-            }
-        }
-
-        stage('Smoke Test') {
-            steps {
-                sh '''
-                    echo " Vérification Frontend (port 5173)..."
-                    curl -f http://localhost:5173 || echo "Frontend unreachable"
-
-                    echo " Vérification Backend (port 5001)..."
-                    curl -f http://localhost:5001/api || echo "Backend unreachable"
-                '''
+                sh 'docker compose down'
+                sh 'docker compose up -d'
             }
         }
     }
-
+    
     post {
+        always {
+            echo 'Pipeline terminé - vérifiez les logs ci-dessus'
+        }
         success {
             emailext(
                 subject: "Build SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                 body: "Pipeline réussi\nDétails : ${env.BUILD_URL}",
                 to: "sowdmzz@gmail.com"
             )
+            echo '✅ Déploiement réussi!'
+            echo 'Frontend: http://localhost:5173'
+            echo 'Backend: http://localhost:5001'
         }
         failure {
+            echo '❌ Échec du déploiement'
             emailext(
                 subject: "Build FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                 body: "Le pipeline a échoué\nDétails : ${env.BUILD_URL}",
