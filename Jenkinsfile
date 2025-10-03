@@ -37,7 +37,7 @@ pipeline {
             steps {
                 sh '''
                     echo "🔨 Construction des images..."
-                    docker-compose build --no-cache
+                    docker compose build --no-cache
                 '''
             }
         }
@@ -46,13 +46,13 @@ pipeline {
             steps {
                 sh '''
                     echo "🚀 Déploiement en cours..."
-                    docker-compose up -d
+                    docker compose up -d
                     
                     echo "⏳ Attente du démarrage..."
                     sleep 30
                     
                     echo "📊 État des conteneurs:"
-                    docker-compose ps
+                    docker compose ps
                 '''
             }
         }
@@ -63,7 +63,7 @@ pipeline {
                     echo "🏥 Vérification de la santé des services..."
                     
                     # Vérifier que les conteneurs sont en cours d'exécution
-                    if docker-compose ps | grep -q "Up"; then
+                    if docker compose ps | grep -q "Up"; then
                         echo "✅ Tous les services sont en cours d'exécution"
                     else
                         echo "❌ Certains services ne sont pas démarrés"
@@ -86,7 +86,7 @@ pipeline {
             echo '📝 Pipeline terminé - vérifiez les logs ci-dessus'
             sh '''
                 echo "📋 État final des conteneurs:"
-                docker-compose ps || true
+                docker compose ps || true
                 echo "🔍 Derniers logs:"
                 docker-compose logs --tail=20 || true
             '''
