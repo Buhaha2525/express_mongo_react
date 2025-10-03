@@ -119,7 +119,7 @@ pipeline {
                     </ul>
                     
                     <h3>🐋 Conteneurs Docker:</h3>
-                    <pre>${sh(script: 'docker-compose ps', returnStdout: true)}</pre>
+                    <pre>${sh(script: 'docker compose ps', returnStdout: true)}</pre>
                     
                     <p style="color: green; font-weight: bold;">✅ Tous les services sont opérationnels</p>
                     
@@ -137,7 +137,7 @@ pipeline {
             script {
                 echo '❌ Échec du déploiement'
                 // Récupérer les logs d'erreur
-                def errorLogs = sh(script: 'docker-compose logs --tail=50 2>/dev/null || echo "Impossible de récupérer les logs"', returnStdout: true)
+                def errorLogs = sh(script: 'docker compose logs --tail=50 2>/dev/null || echo "Impossible de récupérer les logs"', returnStdout: true)
                 
                 emailext (
                     subject: "❌ ÉCHEC - Déploiement ${env.JOB_NAME} #${env.BUILD_NUMBER}",
