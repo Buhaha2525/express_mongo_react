@@ -31,8 +31,21 @@ pipeline {
         
         stage('Deploy with Docker Compose') {
             steps {
-                sh 'docker compose down'
-                sh 'docker compose up -d'
+                sh 'docker-compose down || true'  // || true pour éviter l'échec si aucun conteneur
+                sh 'docker-compose up -d --build'  // --build pour rebuild si nécessaire
+            }
+        }
+        
+        stage('Verification') {
+            steps {
+                sh '''
+                    echo "⏳ Attente du démarrage des services..."
+                    sleep 30
+                    echo "📊 État des conteneurs:"
+                    docker-compose ps
+                    echo "🔍 Logs récents:"
+                    docker-compose logs --tail=20
+                '''
             }
         }
     }
@@ -40,24 +53,17 @@ pipeline {
     post {
         always {
             echo 'Pipeline terminé - vérifiez les logs ci-dessus'
+            sh 'docker-compose ps || true'
         }
         success {
-            emailext(
-                subject: "Build SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                body: "Pipeline réussi\nDétails : ${env.BUILD_URL}",
-                to: "sowdmzz@gmail.com"
-            )
             echo '✅ Déploiement réussi!'
             echo 'Frontend: http://localhost:5173'
             echo 'Backend: http://localhost:5001'
+            // L'email nécessite une configuration SMTP dans Jenkins
         }
         failure {
             echo '❌ Échec du déploiement'
-            emailext(
-                subject: "Build FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                body: "Le pipeline a échoué\nDétails : ${env.BUILD_URL}",
-                to: "sowdmzz@gmail.com"
-            )
+            sh 'docker-compose logs || true'
         }
     }
 }
