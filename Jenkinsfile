@@ -12,6 +12,7 @@ pipeline {
     }
 
     triggers {
+        // Pour que le pipeline démarre quand le webhook est reçu
         GenericTrigger(
             genericVariables: [
                 [key: 'ref', value: '$.ref'],
@@ -26,22 +27,17 @@ pipeline {
     }
 
     stages {
-        stage('Clean Workspace') {
-            steps {
-                cleanWs()
-            }
-        }
-
         stage('Checkout') {
             steps {
-                git branch: 'main', url: 'https://github.com/Buhaha2525/express_mongo_react.git'
+                echo "Hello word"
+                //git branch: 'main', url: 'https://github.com/mhdgeek/express_mongo_react.git'
             }
         }
 
         stage('Install dependencies - Backend') {
             steps {
                 dir('back-end') {
-                    sh 'npm ci'
+                    sh 'npm install'
                 }
             }
         }
@@ -49,7 +45,7 @@ pipeline {
         stage('Install dependencies - Frontend') {
             steps {
                 dir('front-end') {
-                    sh 'npm ci'
+                    sh 'npm install'
                 }
             }
         }
@@ -57,16 +53,8 @@ pipeline {
         stage('Run Tests') {
             steps {
                 script {
-                    try {
-                        sh 'cd back-end && npm test'
-                    } catch (e) {
-                        echo "Aucun test backend ou échec des tests: ${e.message}"
-                    }
-                    try {
-                        sh 'cd front-end && npm test'
-                    } catch (e) {
-                        echo "Aucun test frontend ou échec des tests: ${e.message}"
-                    }
+                    sh 'cd back-end && npm test || echo "Aucun test backend"'
+                    sh 'cd front-end && npm test || echo "Aucun test frontend"'
                 }
             }
         }
@@ -74,30 +62,25 @@ pipeline {
         stage('Build Docker Images') {
             steps {
                 script {
-                    sh "docker build -t ${DOCKER_HUB_USER}/${FRONT_IMAGE}:latest ./front-end"
-                    sh "docker build -t ${DOCKER_HUB_USER}/${BACK_IMAGE}:latest ./back-end"
+                    sh "docker build -t $DOCKER_HUB_USER/$FRONT_IMAGE:latest ./front-end"
+                    sh "docker build -t $DOCKER_HUB_USER/$BACK_IMAGE:latest ./back-end"
                 }
             }
         }
 
         stage('Push Docker Images') {
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub-credentials', 
-                    usernameVariable: 'DOCKER_USER', 
-                    passwordVariable: 'DOCKER_PASS'
-                )]) {
-                    script {
-                        sh """
-                            echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin
-                            docker push ${DOCKER_HUB_USER}/${FRONT_IMAGE}:latest
-                            docker push ${DOCKER_HUB_USER}/${BACK_IMAGE}:latest
-                        """
-                    }
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh '''
+                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
+                        docker push $DOCKER_USER/react-frontend:latest
+                        docker push $DOCKER_USER/express-backend:latest
+                    '''
                 }
             }
         }
 
+        // on supprime les conteneur inactif dans docker container
         stage('Clean Docker') {
             steps {
                 sh 'docker container prune -f'
@@ -108,61 +91,48 @@ pipeline {
         stage('Check Docker & Compose') {
             steps {
                 sh 'docker --version'
-                sh 'docker compose version'
+                sh 'docker-compose --version || echo "docker-compose non trouvé"'
             }
         }
 
         stage('Deploy (compose.yaml)') {
             steps {
-                sh 'docker compose -f compose.yaml down || true'
-                sh 'docker compose -f compose.yaml pull || true'
-                sh 'docker compose -f compose.yaml up -d --build'
-                sleep 30
-                sh 'docker compose -f compose.yaml ps'
-                sh 'docker compose -f compose.yaml logs --tail=20'
+                dir('.') {  
+                    sh 'docker-compose -f compose.yaml down || true'
+                    sh 'docker-compose -f compose.yaml pull'
+                    sh 'docker-compose -f compose.yaml up -d'
+                    sh 'docker-compose -f compose.yaml ps'
+                    sh 'docker-compose -f compose.yaml logs --tail=50'
+                }
             }
         }
 
         stage('Smoke Test') {
             steps {
-                script {
-                    try {
-                        sh 'curl -f http://localhost:5173 --retry 3 --retry-delay 5 || echo "Frontend unreachable"'
-                    } catch (e) {
-                        echo "Frontend smoke test failed: ${e.message}"
-                    }
-                    try {
-                        sh 'curl -f http://localhost:5001/api --retry 3 --retry-delay 5 || echo "Backend unreachable"'
-                    } catch (e) {
-                        echo "Backend smoke test failed: ${e.message}"
-                    }
-                }
+                sh '''
+                    echo " Vérification Frontend (port 5173)..."
+                    curl -f http://localhost:5173 || echo "Frontend unreachable"
+
+                    echo " Vérification Backend (port 5001)..."
+                    curl -f http://localhost:5001/api || echo "Backend unreachable"
+                '''
             }
         }
     }
 
     post {
-        always {
-            cleanWs()
-        }
         success {
             emailext(
                 subject: "Build SUCCESS: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                body: """
-                Pipeline réussi !
-                Détails : ${env.BUILD_URL}
-                """,
-                to: "sowgokuuza@gmail.com"
+                body: "Pipeline réussi\nDétails : ${env.BUILD_URL}",
+                to: "sowdmzz@gmail.com"
             )
         }
         failure {
             emailext(
                 subject: "Build FAILED: ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                body: """
-                Le pipeline a échoué
-                Détails : ${env.BUILD_URL}
-                """,
-                to: "sowgokuuza@gmail.com"
+                body: "Le pipeline a échoué\nDétails : ${env.BUILD_URL}",
+                to: "sowdmzz@gmail.com"
             )
         }
     }
