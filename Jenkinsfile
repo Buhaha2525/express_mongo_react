@@ -24,8 +24,8 @@ pipeline {
                     docker stop react-frontend 2>/dev/null || echo "Aucun conteneur react-frontend à arrêter"
                     docker rm react-frontend 2>/dev/null || echo "Aucun conteneur react-frontend à supprimer"
                     
-                    # Nettoyage complet avec docker-compose
-                    docker-compose down 2>/dev/null || echo "docker-compose down échoué ou non disponible"
+                    # Nettoyage complet avec docker compose
+                    docker compose down 2>/dev/null || echo "docker compose down échoué ou non disponible"
                     
                     # Supprimer les conteneurs orphelins
                     docker ps -aq --filter "status=exited" | xargs docker rm 2>/dev/null || true
@@ -67,7 +67,7 @@ pipeline {
                         echo "✅ Tous les services sont en cours d'exécution"
                     else
                         echo "❌ Certains services ne sont pas démarrés"
-                        docker-compose ps
+                        docker compose ps
                         exit 1
                     fi
                     
@@ -88,12 +88,15 @@ pipeline {
                 echo "📋 État final des conteneurs:"
                 docker compose ps || true
                 echo "🔍 Derniers logs:"
-                docker-compose logs --tail=20 || true
+                docker compose logs --tail=20 || true
             '''
         }
         success {
             script {
                 echo '✅ Déploiement réussi!'
+                // Récupérer l'état des conteneurs pour l'email
+                def containerStatus = sh(script: 'docker compose ps', returnStdout: true)
+                
                 emailext (
                     subject: "✅ SUCCÈS - Déploiement ${env.JOB_NAME} #${env.BUILD_NUMBER}",
                     body: """
@@ -119,7 +122,7 @@ pipeline {
                     </ul>
                     
                     <h3>🐋 Conteneurs Docker:</h3>
-                    <pre>${sh(script: 'docker compose ps', returnStdout: true)}</pre>
+                    <pre>${containerStatus}</pre>
                     
                     <p style="color: green; font-weight: bold;">✅ Tous les services sont opérationnels</p>
                     
