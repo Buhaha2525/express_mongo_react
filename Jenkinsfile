@@ -176,12 +176,5 @@ pipeline {
                 )
             }
         }
-        unstable {
-            emailext (
-                subject: "⚠️ INSTABLE - Déploiement ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                body: "Le pipeline ${env.JOB_NAME} #${env.BUILD_NUMBER} est instable.\n\nDétails: ${env.BUILD_URL}",
-                to: "sowdmzz@gmail.com"
-            )
-        }
     }
 }
