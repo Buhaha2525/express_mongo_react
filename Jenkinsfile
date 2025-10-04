@@ -5,7 +5,7 @@ pipeline {
         stage('Checkout') {
             steps {
                 git branch: 'main', 
-                url: 'https://github.com/Buhaha2525/express_mongo_react2.git'
+                url: 'https://github.com/Buhaha2525/express_mongo_react.git'
             }
         }
         
