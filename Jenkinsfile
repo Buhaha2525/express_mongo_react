@@ -54,21 +54,25 @@ pipeline {
                 '''
             }
         }
-    stage('Pousser les images Docker') {
-        steps {
-            withCredentials([usernamePassword(
-                credentialsId: "docker-hub-credentials", 
-                usernameVariable: 'DOCKER_USERNAME', 
-                passwordVariable: 'DOCKER_PASSWORD'
-            )]) {
+   stage('Tag & Push Images') {
+    steps {
+        withCredentials([usernamePassword(
+            credentialsId: "docker-hub-credentials", 
+            usernameVariable: 'DOCKER_USERNAME', 
+            passwordVariable: 'DOCKER_PASSWORD'
+        )]) {
             sh """
                 echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USERNAME --password-stdin
-                docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}
-                docker tag ${FRONTEND_IMAGE}:${BUILD_NUMBER} ${FRONTEND_IMAGE}:latest
-                docker push ${FRONTEND_IMAGE}:latest
 
+                # Récupérer les images générées par docker compose
+                docker tag $(docker images -q react-frontend) ${FRONTEND_IMAGE}:${BUILD_NUMBER}
+                docker tag $(docker images -q react-frontend) ${FRONTEND_IMAGE}:latest
+                docker tag $(docker images -q express-api) ${BACKEND_IMAGE}:${BUILD_NUMBER}
+                docker tag $(docker images -q express-api) ${BACKEND_IMAGE}:latest
+
+                docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}
+                docker push ${FRONTEND_IMAGE}:latest
                 docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}
-                docker tag ${BACKEND_IMAGE}:${BUILD_NUMBER} ${BACKEND_IMAGE}:latest
                 docker push ${BACKEND_IMAGE}:latest
 
                 docker logout
