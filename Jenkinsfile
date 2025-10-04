@@ -51,6 +51,9 @@ pipeline {
                 sh '''
                     echo "🔨 Construction des images..."
                     docker compose build --no-cache
+                    
+                    echo "📋 Liste des images construites:"
+                    docker images
                 '''
             }
         }
@@ -63,25 +66,60 @@ pipeline {
                     passwordVariable: 'DOCKER_PASSWORD'
                 )]) {
                     sh '''
+                        echo "🔐 Connexion à Docker Hub..."
                         echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
 
-                        # Récupérer les images générées par docker compose
-                        FRONTEND_ID=$(docker images -q react-frontend | head -1)
-                        BACKEND_ID=$(docker images -q express-api | head -1)
+                        echo "📋 Liste des images disponibles:"
+                        docker images
 
+                        # Vérifier si les images existent avec leurs noms complets
+                        echo "🔍 Recherche des images..."
+                        FRONTEND_ID=$(docker images --format "table {{.Repository}}:{{.Tag}}" | grep "react-frontend" | head -1 | cut -d' ' -f1)
+                        BACKEND_ID=$(docker images --format "table {{.Repository}}:{{.Tag}}" | grep "express-api" | head -1 | cut -d' ' -f1)
+
+                        # Si non trouvés, essayer avec les noms sans tag
+                        if [ -z "$FRONTEND_ID" ]; then
+                            FRONTEND_ID=$(docker images -q react-frontend | head -1)
+                        fi
+                        
+                        if [ -z "$BACKEND_ID" ]; then
+                            BACKEND_ID=$(docker images -q express-api | head -1)
+                        fi
+
+                        echo "Frontend ID: $FRONTEND_ID"
+                        echo "Backend ID: $BACKEND_ID"
+
+                        # Vérifier que les images existent
+                        if [ -z "$FRONTEND_ID" ]; then
+                            echo "❌ Image react-frontend non trouvée"
+                            docker images
+                            exit 1
+                        fi
+
+                        if [ -z "$BACKEND_ID" ]; then
+                            echo "❌ Image express-api non trouvée"
+                            docker images
+                            exit 1
+                        fi
+
+                        echo "🏷️  Taggage des images..."
                         # Tagger les images
                         docker tag $FRONTEND_ID ${FRONTEND_IMAGE}:${BUILD_NUMBER}
                         docker tag $FRONTEND_ID ${FRONTEND_IMAGE}:latest
                         docker tag $BACKEND_ID ${BACKEND_IMAGE}:${BUILD_NUMBER}
                         docker tag $BACKEND_ID ${BACKEND_IMAGE}:latest
 
+                        echo "📤 Poussage des images..."
                         # Pousser les images
                         docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}
                         docker push ${FRONTEND_IMAGE}:latest
                         docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}
                         docker push ${BACKEND_IMAGE}:latest
 
+                        echo "🔓 Déconnexion de Docker Hub..."
                         docker logout
+                        
+                        echo "✅ Images poussées avec succès!"
                     '''
                 }
             }
