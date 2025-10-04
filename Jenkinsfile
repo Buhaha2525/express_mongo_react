@@ -1,5 +1,18 @@
 pipeline {
     agent any
+
+      environment {
+        // Identifiant des identifiants Docker Hub (configuré dans Jenkins)
+        DOCKER_CREDENTIALS_ID = 'docker-hub-credentials'
+        // Nom du registre Docker Hub
+        DOCKER_REGISTRY = 'dmzz'
+        FRONTEND_IMAGE = "${DOCKER_REGISTRY}/express-frontend"
+        BACKEND_IMAGE = "${DOCKER_REGISTRY}/express-backend"
+        // Dépôt GitHub
+        GITHUB_REPO = 'https://github.com/Buhaha2525/express_mongo_react.git'
+        // Identifiant des identifiants GitHub (configuré dans Jenkins)
+        GITHUB_CREDENTIALS_ID = 'github-credentials'
+    }
     
     stages {
         stage('Checkout') {
@@ -39,6 +52,18 @@ pipeline {
                     echo "🔨 Construction des images..."
                     docker compose build --no-cache
                 '''
+            }
+        }
+        stage('Pousser les images Docker') {
+            steps {
+                // Connexion à Docker Hub et pousser les images
+                withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
+                    sh 'echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin'
+                    sh 'docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}'
+                    sh 'docker push ${FRONTEND_IMAGE}:1.0'
+                    sh 'docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}'
+                    sh 'docker push ${BACKEND_IMAGE}:1.0'
+                }
             }
         }
         
