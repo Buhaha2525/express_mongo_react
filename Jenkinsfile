@@ -54,9 +54,9 @@ pipeline {
                 '''
             }
         }
-        stage('Pousser les images Docker') {
-            steps {
-                withCredentials([usernamePassword(
+    stage('Pousser les images Docker') {
+        steps {
+            withCredentials([usernamePassword(
                 credentialsId: "docker-hub-credentials", 
                 usernameVariable: 'DOCKER_USERNAME', 
                 passwordVariable: 'DOCKER_PASSWORD'
@@ -64,9 +64,13 @@ pipeline {
             sh """
                 echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USERNAME --password-stdin
                 docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}
+                docker tag ${FRONTEND_IMAGE}:${BUILD_NUMBER} ${FRONTEND_IMAGE}:latest
                 docker push ${FRONTEND_IMAGE}:latest
+
                 docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}
+                docker tag ${BACKEND_IMAGE}:${BUILD_NUMBER} ${BACKEND_IMAGE}:latest
                 docker push ${BACKEND_IMAGE}:latest
+
                 docker logout
             """
         }
