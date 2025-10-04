@@ -72,33 +72,26 @@ pipeline {
                         echo "📋 Liste des images disponibles:"
                         docker images
 
-                        # Vérifier si les images existent avec leurs noms complets
-                        echo "🔍 Recherche des images..."
-                        FRONTEND_ID=$(docker images --format "table {{.Repository}}:{{.Tag}}" | grep "react-frontend" | head -1 | cut -d' ' -f1)
-                        BACKEND_ID=$(docker images --format "table {{.Repository}}:{{.Tag}}" | grep "express-api" | head -1 | cut -d' ' -f1)
-
-                        # Si non trouvés, essayer avec les noms sans tag
-                        if [ -z "$FRONTEND_ID" ]; then
-                            FRONTEND_ID=$(docker images -q react-frontend | head -1)
-                        fi
-                        
-                        if [ -z "$BACKEND_ID" ]; then
-                            BACKEND_ID=$(docker images -q express-api | head -1)
-                        fi
+                        echo "🔍 Recherche des images récentes..."
+                        # Utiliser les noms d'images corrects basés sur les logs
+                        FRONTEND_ID=$(docker images pipesmartv2-frontend:latest -q)
+                        BACKEND_ID=$(docker images pipesmartv2-backend:latest -q)
 
                         echo "Frontend ID: $FRONTEND_ID"
                         echo "Backend ID: $BACKEND_ID"
 
                         # Vérifier que les images existent
                         if [ -z "$FRONTEND_ID" ]; then
-                            echo "❌ Image react-frontend non trouvée"
-                            docker images
+                            echo "❌ Image pipesmartv2-frontend:latest non trouvée"
+                            echo "📋 Images disponibles:"
+                            docker images | grep -E "(frontend|backend)" || docker images
                             exit 1
                         fi
 
                         if [ -z "$BACKEND_ID" ]; then
-                            echo "❌ Image express-api non trouvée"
-                            docker images
+                            echo "❌ Image pipesmartv2-backend:latest non trouvée"
+                            echo "📋 Images disponibles:"
+                            docker images | grep -E "(frontend|backend)" || docker images
                             exit 1
                         fi
 
