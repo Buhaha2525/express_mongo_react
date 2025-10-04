@@ -1,7 +1,7 @@
 pipeline {
     agent any
 
-      environment {
+    environment {
         // Identifiant des identifiants Docker Hub (configuré dans Jenkins)
         DOCKER_CREDENTIALS_ID = 'docker-hub-credentials'
         // Nom du registre Docker Hub
@@ -54,33 +54,38 @@ pipeline {
                 '''
             }
         }
-   stage('Tag & Push Images') {
-    steps {
-        withCredentials([usernamePassword(
-            credentialsId: "docker-hub-credentials", 
-            usernameVariable: 'DOCKER_USERNAME', 
-            passwordVariable: 'DOCKER_PASSWORD'
-        )]) {
-            sh """
-                echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USERNAME --password-stdin
+        
+        stage('Tag & Push Images') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: "docker-hub-credentials", 
+                    usernameVariable: 'DOCKER_USERNAME', 
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )]) {
+                    sh '''
+                        echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
 
-                # Récupérer les images générées par docker compose
-                docker tag $(docker images -q react-frontend) ${FRONTEND_IMAGE}:${BUILD_NUMBER}
-                docker tag $(docker images -q react-frontend) ${FRONTEND_IMAGE}:latest
-                docker tag $(docker images -q express-api) ${BACKEND_IMAGE}:${BUILD_NUMBER}
-                docker tag $(docker images -q express-api) ${BACKEND_IMAGE}:latest
+                        # Récupérer les images générées par docker compose
+                        FRONTEND_ID=$(docker images -q react-frontend | head -1)
+                        BACKEND_ID=$(docker images -q express-api | head -1)
 
-                docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}
-                docker push ${FRONTEND_IMAGE}:latest
-                docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}
-                docker push ${BACKEND_IMAGE}:latest
+                        # Tagger les images
+                        docker tag $FRONTEND_ID ${FRONTEND_IMAGE}:${BUILD_NUMBER}
+                        docker tag $FRONTEND_ID ${FRONTEND_IMAGE}:latest
+                        docker tag $BACKEND_ID ${BACKEND_IMAGE}:${BUILD_NUMBER}
+                        docker tag $BACKEND_ID ${BACKEND_IMAGE}:latest
 
-                docker logout
-            """
+                        # Pousser les images
+                        docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}
+                        docker push ${FRONTEND_IMAGE}:latest
+                        docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}
+                        docker push ${BACKEND_IMAGE}:latest
+
+                        docker logout
+                    '''
+                }
+            }
         }
-    }
-}
-
         
         stage('Deploy') {
             steps {
