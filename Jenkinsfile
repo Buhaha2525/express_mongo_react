@@ -56,16 +56,23 @@ pipeline {
         }
         stage('Pousser les images Docker') {
             steps {
-                // Connexion à Docker Hub et pousser les images
-                withCredentials([usernamePassword(credentialsId: "${DOCKER_CREDENTIALS_ID}", usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
-                    sh 'echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin'
-                    sh 'docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}'
-                    sh 'docker push ${FRONTEND_IMAGE}:1.0'
-                    sh 'docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}'
-                    sh 'docker push ${BACKEND_IMAGE}:1.0'
-                }
-            }
+                withCredentials([usernamePassword(
+                credentialsId: "${DOCKER_CREDENTIALS_ID}", 
+                usernameVariable: 'DOCKER_USERNAME', 
+                passwordVariable: 'DOCKER_PASSWORD'
+            )]) {
+            sh """
+                echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USERNAME --password-stdin
+                docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}
+                docker push ${FRONTEND_IMAGE}:1.0
+                docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}
+                docker push ${BACKEND_IMAGE}:1.0
+                docker logout
+            """
         }
+    }
+}
+
         
         stage('Deploy') {
             steps {
