@@ -64,9 +64,9 @@ pipeline {
             sh """
                 echo \$DOCKER_PASSWORD | docker login -u \$DOCKER_USERNAME --password-stdin
                 docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}
-                docker push ${FRONTEND_IMAGE}:1.0
+                docker push ${FRONTEND_IMAGE}:latest
                 docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}
-                docker push ${BACKEND_IMAGE}:1.0
+                docker push ${BACKEND_IMAGE}:latest
                 docker logout
             """
         }
