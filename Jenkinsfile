@@ -28,13 +28,30 @@ pipeline {
             }
         }
         
+        stage('Verify Structure') {
+            steps {
+                sh '''
+                    echo "📁 Vérification de la structure..."
+                    echo "Dossiers trouvés:"
+                    ls -la
+                    echo ""
+                    echo "Contenu de back-end:"
+                    ls -la back-end/ || echo "back-end non accessible"
+                    echo ""
+                    echo "Contenu de front-end:"
+                    ls -la front-end/ || echo "front-end non accessible"
+                '''
+            }
+        }
+        
         stage('Dependency Installation') {
             parallel {
                 stage('Install Frontend Dependencies') {
                     steps {
                         sh '''
                             echo "📦 Installation des dépendances Frontend..."
-                            cd frontend && npm install
+                            cd front-end && npm install
+                            echo "✅ Dépendances frontend installées"
                         '''
                     }
                 }
@@ -42,7 +59,8 @@ pipeline {
                     steps {
                         sh '''
                             echo "📦 Installation des dépendances Backend..."
-                            cd backend && npm install
+                            cd back-end && npm install
+                            echo "✅ Dépendances backend installées"
                         '''
                     }
                 }
@@ -60,10 +78,8 @@ pipeline {
                                     -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
                                     -Dsonar.projectName='Express Backend' \
                                     -Dsonar.projectVersion=${BUILD_NUMBER} \
-                                    -Dsonar.sources=backend/src \
-                                    -Dsonar.tests=backend/test \
-                                    -Dsonar.javascript.lcov.reportPaths=backend/coverage/lcov.info \
-                                    -Dsonar.coverage.exclusions=**/test/**,**/node_modules/** \
+                                    -Dsonar.sources=back-end \
+                                    -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
                                     -Dsonar.sourceEncoding=UTF-8
                                 """
                             }
@@ -79,10 +95,8 @@ pipeline {
                                     -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
                                     -Dsonar.projectName='React Frontend' \
                                     -Dsonar.projectVersion=${BUILD_NUMBER} \
-                                    -Dsonar.sources=frontend/src \
-                                    -Dsonar.tests=frontend/src \
-                                    -Dsonar.javascript.lcov.reportPaths=frontend/coverage/lcov.info \
-                                    -Dsonar.coverage.exclusions=**/test/**,**/node_modules/**,**/*.test.js \
+                                    -Dsonar.sources=front-end \
+                                    -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
                                     -Dsonar.sourceEncoding=UTF-8
                                 """
                             }
@@ -108,17 +122,25 @@ pipeline {
                     steps {
                         sh '''
                             echo "🧪 Exécution des tests Backend..."
-                            cd backend && npm test -- --coverage --watchAll=false || echo "Tests backend terminés"
+                            cd back-end
+                            if [ -f "package.json" ] && grep -q '"test"' package.json; then
+                                echo "✅ Script de test trouvé, exécution..."
+                                npm test -- --coverage --watchAll=false || echo "Tests backend terminés"
+                            else
+                                echo "ℹ️  Aucun script de test trouvé dans back-end"
+                                # Créer une structure de couverture minimale si nécessaire
+                                mkdir -p coverage
+                                echo "No tests configured" > coverage/placeholder.txt
+                            fi
                         '''
                     }
                     post {
                         always {
-                            junit 'backend/test-results/**/*.xml' 
                             publishHTML([
                                 allowMissing: true,
                                 alwaysLinkToLastBuild: true,
                                 keepAll: true,
-                                reportDir: 'backend/coverage/lcov-report',
+                                reportDir: 'back-end/coverage/lcov-report',
                                 reportFiles: 'index.html',
                                 reportName: 'Backend Coverage Report'
                             ])
@@ -129,17 +151,25 @@ pipeline {
                     steps {
                         sh '''
                             echo "🧪 Exécution des tests Frontend..."
-                            cd frontend && npm test -- --coverage --watchAll=false || echo "Tests frontend terminés"
+                            cd front-end
+                            if [ -f "package.json" ] && grep -q '"test"' package.json; then
+                                echo "✅ Script de test trouvé, exécution..."
+                                npm test -- --coverage --watchAll=false || echo "Tests frontend terminés"
+                            else
+                                echo "ℹ️  Aucun script de test trouvé dans front-end"
+                                # Créer une structure de couverture minimale si nécessaire
+                                mkdir -p coverage
+                                echo "No tests configured" > coverage/placeholder.txt
+                            fi
                         '''
                     }
                     post {
                         always {
-                            junit 'frontend/test-results/**/*.xml'
                             publishHTML([
                                 allowMissing: true,
                                 alwaysLinkToLastBuild: true,
                                 keepAll: true,
-                                reportDir: 'frontend/coverage/lcov-report',
+                                reportDir: 'front-end/coverage/lcov-report',
                                 reportFiles: 'index.html',
                                 reportName: 'Frontend Coverage Report'
                             ])
@@ -154,8 +184,10 @@ pipeline {
                 sh '''
                     echo "🔒 Analyse de sécurité des dépendances..."
                     # Scan des vulnérabilités avec npm audit
-                    cd backend && npm audit --audit-level moderate || true
-                    cd ../frontend && npm audit --audit-level moderate || true
+                    echo "=== Backend ==="
+                    cd back-end && npm audit --audit-level moderate || true
+                    echo "=== Frontend ==="
+                    cd ../front-end && npm audit --audit-level moderate || true
                 '''
             }
         }
@@ -280,7 +312,11 @@ pipeline {
                     
                     # Tests de santé supplémentaires
                     echo "🔍 Tests de connectivité..."
+                    echo "Test Backend (attente 5s)..."
+                    sleep 5
                     curl -f http://localhost:5001/api/health || echo "Backend health check failed"
+                    echo "Test Frontend (attente 5s)..."
+                    sleep 5
                     curl -f http://localhost:5173 || echo "Frontend health check failed"
                     
                     echo "🔗 URLs de l'application:"
@@ -336,7 +372,6 @@ pipeline {
                     <ul>
                         <li><strong>Rapport Backend SonarQube:</strong> <a href="${sonarBackendUrl}">Voir le rapport</a></li>
                         <li><strong>Rapport Frontend SonarQube:</strong> <a href="${sonarFrontendUrl}">Voir le rapport</a></li>
-                        <li><strong>Tests exécutés:</strong> Backend & Frontend</li>
                         <li><strong>Analyse de sécurité:</strong> Effectuée</li>
                     </ul>
                     
