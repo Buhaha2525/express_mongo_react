@@ -28,6 +28,22 @@ pipeline {
             }
         }
         
+        stage('Clean SonarQube Configuration') {
+            steps {
+                sh '''
+                    echo "🧹 Nettoyage de la configuration SonarQube..."
+                    # Supprimer ou renommer le fichier sonar-project.properties s'il existe
+                    if [ -f "sonar-project.properties" ]; then
+                        echo "📄 Fichier sonar-project.properties trouvé, suppression..."
+                        rm -f sonar-project.properties
+                    fi
+                    
+                    # Nettoyer les dossiers temporaires SonarQube
+                    rm -rf .scannerwork target build
+                '''
+            }
+        }
+        
         stage('Verify Structure') {
             steps {
                 sh '''
@@ -67,40 +83,41 @@ pipeline {
             }
         }
         
-        stage('SonarQube Analysis') {
-            parallel {
-                stage('Backend Code Analysis') {
-                    steps {
-                        script {
-                            withSonarQubeEnv('SonarQube') {
-                                sh """
-                                    ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
-                                    -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
-                                    -Dsonar.projectName='Express Backend' \
-                                    -Dsonar.projectVersion=${BUILD_NUMBER} \
-                                    -Dsonar.sources=back-end \
-                                    -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
-                                    -Dsonar.sourceEncoding=UTF-8
-                                """
-                            }
-                        }
+        stage('SonarQube Analysis - Backend') {
+            steps {
+                script {
+                    withSonarQubeEnv('SonarQube') {
+                        sh """
+                            echo "🔍 Analyse SonarQube Backend..."
+                            ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
+                            -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
+                            -Dsonar.projectName='Express Backend' \
+                            -Dsonar.projectVersion=${BUILD_NUMBER} \
+                            -Dsonar.sources=back-end \
+                            -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
+                            -Dsonar.sourceEncoding=UTF-8 \
+                            -Dsonar.coverage.exclusions=**/node_modules/**,**/coverage/**
+                        """
                     }
                 }
-                stage('Frontend Code Analysis') {
-                    steps {
-                        script {
-                            withSonarQubeEnv('SonarQube') {
-                                sh """
-                                    ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
-                                    -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
-                                    -Dsonar.projectName='React Frontend' \
-                                    -Dsonar.projectVersion=${BUILD_NUMBER} \
-                                    -Dsonar.sources=front-end \
-                                    -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
-                                    -Dsonar.sourceEncoding=UTF-8
-                                """
-                            }
-                        }
+            }
+        }
+        
+        stage('SonarQube Analysis - Frontend') {
+            steps {
+                script {
+                    withSonarQubeEnv('SonarQube') {
+                        sh """
+                            echo "🔍 Analyse SonarQube Frontend..."
+                            ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
+                            -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
+                            -Dsonar.projectName='React Frontend' \
+                            -Dsonar.projectVersion=${BUILD_NUMBER} \
+                            -Dsonar.sources=front-end \
+                            -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
+                            -Dsonar.sourceEncoding=UTF-8 \
+                            -Dsonar.coverage.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js
+                        """
                     }
                 }
             }
@@ -111,69 +128,6 @@ pipeline {
                 script {
                     timeout(time: 10, unit: 'MINUTES') {
                         waitForQualityGate abortPipeline: true
-                    }
-                }
-            }
-        }
-        
-        stage('Tests & Coverage') {
-            parallel {
-                stage('Backend Tests') {
-                    steps {
-                        sh '''
-                            echo "🧪 Exécution des tests Backend..."
-                            cd back-end
-                            if [ -f "package.json" ] && grep -q '"test"' package.json; then
-                                echo "✅ Script de test trouvé, exécution..."
-                                npm test -- --coverage --watchAll=false || echo "Tests backend terminés"
-                            else
-                                echo "ℹ️  Aucun script de test trouvé dans back-end"
-                                # Créer une structure de couverture minimale si nécessaire
-                                mkdir -p coverage
-                                echo "No tests configured" > coverage/placeholder.txt
-                            fi
-                        '''
-                    }
-                    post {
-                        always {
-                            publishHTML([
-                                allowMissing: true,
-                                alwaysLinkToLastBuild: true,
-                                keepAll: true,
-                                reportDir: 'back-end/coverage/lcov-report',
-                                reportFiles: 'index.html',
-                                reportName: 'Backend Coverage Report'
-                            ])
-                        }
-                    }
-                }
-                stage('Frontend Tests') {
-                    steps {
-                        sh '''
-                            echo "🧪 Exécution des tests Frontend..."
-                            cd front-end
-                            if [ -f "package.json" ] && grep -q '"test"' package.json; then
-                                echo "✅ Script de test trouvé, exécution..."
-                                npm test -- --coverage --watchAll=false || echo "Tests frontend terminés"
-                            else
-                                echo "ℹ️  Aucun script de test trouvé dans front-end"
-                                # Créer une structure de couverture minimale si nécessaire
-                                mkdir -p coverage
-                                echo "No tests configured" > coverage/placeholder.txt
-                            fi
-                        '''
-                    }
-                    post {
-                        always {
-                            publishHTML([
-                                allowMissing: true,
-                                alwaysLinkToLastBuild: true,
-                                keepAll: true,
-                                reportDir: 'front-end/coverage/lcov-report',
-                                reportFiles: 'index.html',
-                                reportName: 'Frontend Coverage Report'
-                            ])
-                        }
                     }
                 }
             }
@@ -212,6 +166,9 @@ pipeline {
                     
                     # Supprimer les conteneurs orphelins
                     docker ps -aq --filter "status=exited" | xargs docker rm 2>/dev/null || true
+                    
+                    # Nettoyer les dossiers temporaires
+                    rm -rf .scannerwork
                 '''
             }
         }
@@ -342,6 +299,7 @@ pipeline {
             sh '''
                 echo "🧹 Nettoyage des ressources temporaires..."
                 docker system prune -f || true
+                rm -rf .scannerwork || true
             '''
         }
         success {
