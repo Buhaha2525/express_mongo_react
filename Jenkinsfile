@@ -12,6 +12,10 @@ pipeline {
         GITHUB_REPO = 'https://github.com/Buhaha2525/express_mongo_react.git'
         // Identifiant des identifiants GitHub (configuré dans Jenkins)
         GITHUB_CREDENTIALS_ID = 'github-credentials'
+        // Configuration SonarQube
+        SONARQUBE_SCANNER_HOME = tool 'SonarQubeScanner'
+        SONAR_HOST_URL = 'http://localhost:9000' // Ajustez l'URL de votre instance SonarQube
+        SONAR_PROJECT_KEY = 'express_mongo_react'
     }
     
     stages {
@@ -22,34 +26,144 @@ pipeline {
             }
         }
         
-        stage('Cleanup Existing Containers') {
+        stage('Dependency Installation') {
+            parallel {
+                stage('Install Frontend Dependencies') {
+                    steps {
+                        sh '''
+                            echo "📦 Installation des dépendances Frontend..."
+                            cd frontend && npm install
+                        '''
+                    }
+                }
+                stage('Install Backend Dependencies') {
+                    steps {
+                        sh '''
+                            echo "📦 Installation des dépendances Backend..."
+                            cd backend && npm install
+                        '''
+                    }
+                }
+            }
+        }
+        
+        stage('SonarQube Analysis') {
+            parallel {
+                stage('Backend Code Analysis') {
+                    steps {
+                        script {
+                            withSonarQubeEnv('SonarQube') { // 'SonarQube' doit être configuré dans Jenkins
+                                sh """
+                                    ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
+                                    -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
+                                    -Dsonar.projectName='Express Backend' \
+                                    -Dsonar.projectVersion=${BUILD_NUMBER} \
+                                    -Dsonar.sources=backend/src \
+                                    -Dsonar.tests=backend/test \
+                                    -Dsonar.javascript.lcov.reportPaths=backend/coverage/lcov.info \
+                                    -Dsonar.coverage.exclusions=**/test/**,**/node_modules/** \
+                                    -Dsonar.sourceEncoding=UTF-8
+                                """
+                            }
+                        }
+                    }
+                }
+                stage('Frontend Code Analysis') {
+                    steps {
+                        script {
+                            withSonarQubeEnv('SonarQube') {
+                                sh """
+                                    ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
+                                    -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
+                                    -Dsonar.projectName='React Frontend' \
+                                    -Dsonar.projectVersion=${BUILD_NUMBER} \
+                                    -Dsonar.sources=frontend/src \
+                                    -Dsonar.tests=frontend/src \
+                                    -Dsonar.javascript.lcov.reportPaths=frontend/coverage/lcov.info \
+                                    -Dsonar.coverage.exclusions=**/test/**,**/node_modules/**,**/*.test.js \
+                                    -Dsonar.sourceEncoding=UTF-8
+                                """
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Quality Gate') {
+            steps {
+                script {
+                    timeout(time: 10, unit: 'MINUTES') {
+                        waitForQualityGate abortPipeline: true
+                    }
+                }
+            }
+        }
+        
+        stage('Tests & Coverage') {
+            parallel {
+                stage('Backend Tests') {
+                    steps {
+                        sh '''
+                            echo "🧪 Exécution des tests Backend..."
+                            cd backend && npm test -- --coverage
+                        '''
+                    }
+                }
+                stage('Frontend Tests') {
+                    steps {
+                        sh '''
+                            echo "🧪 Exécution des tests Frontend..."
+                            cd frontend && npm test -- --coverage --watchAll=false
+                        '''
+                    }
+                }
+            }
+            post {
+                always {
+                    sh '''
+                        echo "📊 Rapports de couverture générés"
+                        # Sauvegarder les rapports de test
+                        mkdir -p test-reports
+                        [ -f backend/coverage/coverage-final.json ] && cp backend/coverage/coverage-final.json test-reports/backend-coverage.json || echo "Aucun rapport backend"
+                        [ -f frontend/coverage/coverage-final.json ] && cp frontend/coverage/coverage-final.json test-reports/frontend-coverage.json || echo "Aucun rapport frontend"
+                    '''
+                    junit '**/test-results/**/*.xml' // Si vous générez des rapports JUnit
+                    publishHTML([
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'backend/coverage/lcov-report',
+                        reportFiles: 'index.html',
+                        reportName: 'Backend Coverage Report'
+                    ])
+                    publishHTML([
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'frontend/coverage/lcov-report',
+                        reportFiles: 'index.html',
+                        reportName: 'Frontend Coverage Report'
+                    ])
+                }
+            }
+        }
+        
+        stage('Security Scan') {
             steps {
                 sh '''
-                    echo "🧹 Nettoyage des conteneurs existants..."
-                    
-                    # Arrêter et supprimer les conteneurs spécifiques
-                    docker stop mongo 2>/dev/null || echo "Aucun conteneur mongo à arrêter"
-                    docker rm mongo 2>/dev/null || echo "Aucun conteneur mongo à supprimer"
-                    
-                    docker stop express-api 2>/dev/null || echo "Aucun conteneur express-api à arrêter"
-                    docker rm express-api 2>/dev/null || echo "Aucun conteneur express-api à supprimer"
-                    
-                    docker stop react-frontend 2>/dev/null || echo "Aucun conteneur react-frontend à arrêter"
-                    docker rm react-frontend 2>/dev/null || echo "Aucun conteneur react-frontend à supprimer"
-                    
-                    # Nettoyage complet avec docker compose
-                    docker compose down 2>/dev/null || echo "docker compose down échoué ou non disponible"
-                    
-                    # Supprimer les conteneurs orphelins
-                    docker ps -aq --filter "status=exited" | xargs docker rm 2>/dev/null || true
+                    echo "🔒 Analyse de sécurité des dépendances..."
+                    # Scan des vulnérabilités avec npm audit
+                    cd backend && npm audit --audit-level moderate || true
+                    cd ../frontend && npm audit --audit-level moderate || true
                 '''
             }
         }
         
-        stage('Build Images') {
+        stage('Build Docker Images') {
             steps {
                 sh '''
-                    echo "🔨 Construction des images..."
+                    echo "🔨 Construction des images Docker..."
                     docker compose build --no-cache
                     
                     echo "📋 Liste des images construites:"
@@ -73,37 +187,31 @@ pipeline {
                         docker images
 
                         echo "🔍 Recherche des images récentes..."
-                        # Utiliser les noms d'images corrects basés sur les logs
                         FRONTEND_ID=$(docker images pipesmartv2-frontend:latest -q)
                         BACKEND_ID=$(docker images pipesmartv2-backend:latest -q)
 
                         echo "Frontend ID: $FRONTEND_ID"
                         echo "Backend ID: $BACKEND_ID"
 
-                        # Vérifier que les images existent
                         if [ -z "$FRONTEND_ID" ]; then
                             echo "❌ Image pipesmartv2-frontend:latest non trouvée"
-                            echo "📋 Images disponibles:"
                             docker images | grep -E "(frontend|backend)" || docker images
                             exit 1
                         fi
 
                         if [ -z "$BACKEND_ID" ]; then
                             echo "❌ Image pipesmartv2-backend:latest non trouvée"
-                            echo "📋 Images disponibles:"
                             docker images | grep -E "(frontend|backend)" || docker images
                             exit 1
                         fi
 
                         echo "🏷️  Taggage des images..."
-                        # Tagger les images
                         docker tag $FRONTEND_ID ${FRONTEND_IMAGE}:${BUILD_NUMBER}
                         docker tag $FRONTEND_ID ${FRONTEND_IMAGE}:latest
                         docker tag $BACKEND_ID ${BACKEND_IMAGE}:${BUILD_NUMBER}
                         docker tag $BACKEND_ID ${BACKEND_IMAGE}:latest
 
                         echo "📤 Poussage des images..."
-                        # Pousser les images
                         docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}
                         docker push ${FRONTEND_IMAGE}:latest
                         docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}
@@ -138,7 +246,6 @@ pipeline {
                 sh '''
                     echo "🏥 Vérification de la santé des services..."
                     
-                    # Vérifier que les conteneurs sont en cours d'exécution
                     if docker compose ps | grep -q "Up"; then
                         echo "✅ Tous les services sont en cours d'exécution"
                     else
@@ -147,7 +254,11 @@ pipeline {
                         exit 1
                     fi
                     
-                    # Test simple de connectivité
+                    # Tests de santé supplémentaires
+                    echo "🔍 Tests de connectivité..."
+                    curl -f http://localhost:5001/api/health || echo "Backend health check failed"
+                    curl -f http://localhost:5173 || echo "Frontend health check failed"
+                    
                     echo "🔗 URLs de l'application:"
                     echo "Frontend: http://localhost:5173"
                     echo "Backend: http://localhost:5001/api"
@@ -166,12 +277,18 @@ pipeline {
                 echo "🔍 Derniers logs:"
                 docker compose logs --tail=20 || true
             '''
+            
+            // Nettoyage
+            sh '''
+                echo "🧹 Nettoyage des ressources temporaires..."
+                docker system prune -f || true
+            '''
         }
         success {
             script {
                 echo '✅ Déploiement réussi!'
-                // Récupérer l'état des conteneurs pour l'email
                 def containerStatus = sh(script: 'docker compose ps', returnStdout: true)
+                def sonarUrl = "${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}"
                 
                 emailext (
                     subject: "✅ SUCCÈS - Déploiement ${env.JOB_NAME} #${env.BUILD_NUMBER}",
@@ -188,6 +305,13 @@ pipeline {
                         <li><strong>Job:</strong> ${env.JOB_NAME}</li>
                         <li><strong>URL:</strong> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></li>
                         <li><strong>Date:</strong> ${new Date().format("dd/MM/yyyy à HH:mm")}</li>
+                    </ul>
+                    
+                    <h3>📈 Qualité du code:</h3>
+                    <ul>
+                        <li><strong>Rapport SonarQube:</strong> <a href="${sonarUrl}">Voir le rapport</a></li>
+                        <li><strong>Tests exécutés:</strong> Backend & Frontend</li>
+                        <li><strong>Analyse de sécurité:</strong> Effectuée</li>
                     </ul>
                     
                     <h3>🌐 Application déployée:</h3>
@@ -215,7 +339,6 @@ pipeline {
         failure {
             script {
                 echo '❌ Échec du déploiement'
-                // Récupérer les logs d'erreur
                 def errorLogs = sh(script: 'docker compose logs --tail=50 2>/dev/null || echo "Impossible de récupérer les logs"', returnStdout: true)
                 
                 emailext (
