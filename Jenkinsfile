@@ -187,15 +187,43 @@ pipeline {
             }
         }
         
-        stage('Build Docker Images') {
+        stage('Fix Docker Credentials') {
             steps {
                 sh '''
-                    echo "🔨 Construction des images Docker..."
-                    docker compose build --no-cache
+                    echo "🔧 Correction des credentials Docker..."
+                    # Supprimer la configuration Docker Desktop qui cause des problèmes
+                    rm -f ~/.docker/config.json || echo "Fichier config.json non trouvé"
                     
-                    echo "📋 Liste des images construites:"
-                    docker images
+                    # Vérifier la configuration Docker actuelle
+                    echo "Configuration Docker actuelle:"
+                    docker system info | grep -E "(Username|Registry)" || echo "Non connecté"
                 '''
+            }
+        }
+        
+        stage('Build Docker Images') {
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: "${DOCKER_CREDENTIALS_ID}", 
+                    usernameVariable: 'DOCKER_USERNAME', 
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )]) {
+                    sh '''
+                        echo "🔐 Connexion à Docker Hub..."
+                        echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
+
+                        echo "🔨 Construction des images Docker..."
+                        # Construire les images une par une pour mieux gérer les erreurs
+                        echo "Construction du backend..."
+                        docker compose build backend --no-cache --progress=plain
+                        
+                        echo "Construction du frontend..."
+                        docker compose build frontend --no-cache --progress=plain
+                        
+                        echo "📋 Liste des images construites:"
+                        docker images
+                    '''
+                }
             }
         }
         
@@ -207,7 +235,7 @@ pipeline {
                     passwordVariable: 'DOCKER_PASSWORD'
                 )]) {
                     sh '''
-                        echo "🔐 Connexion à Docker Hub..."
+                        echo "🔐 Vérification de la connexion Docker Hub..."
                         echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
 
                         echo "📋 Liste des images disponibles:"
@@ -222,13 +250,15 @@ pipeline {
 
                         if [ -z "$FRONTEND_ID" ]; then
                             echo "❌ Image pipesmartv2-frontend:latest non trouvée"
-                            docker images | grep -E "(frontend|backend)" || docker images
+                            echo "Images disponibles:"
+                            docker images
                             exit 1
                         fi
 
                         if [ -z "$BACKEND_ID" ]; then
                             echo "❌ Image pipesmartv2-backend:latest non trouvée"
-                            docker images | grep -E "(frontend|backend)" || docker images
+                            echo "Images disponibles:"
+                            docker images
                             exit 1
                         fi
 
@@ -239,8 +269,11 @@ pipeline {
                         docker tag $BACKEND_ID ${BACKEND_IMAGE}:latest
 
                         echo "📤 Poussage des images..."
+                        echo "Poussage du frontend..."
                         docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}
                         docker push ${FRONTEND_IMAGE}:latest
+        
+                        echo "Poussage du backend..."
                         docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}
                         docker push ${BACKEND_IMAGE}:latest
 
@@ -355,6 +388,12 @@ pipeline {
                         <li><strong>Rapport Backend SonarQube:</strong> <a href="${sonarBackendUrl}">Voir le rapport</a></li>
                         <li><strong>Rapport Frontend SonarQube:</strong> <a href="${sonarFrontendUrl}">Voir le rapport</a></li>
                         <li><strong>Analyse de sécurité:</strong> Effectuée</li>
+                    </ul>
+                    
+                    <h3>🐳 Images Docker:</h3>
+                    <ul>
+                        <li><strong>Frontend:</strong> ${FRONTEND_IMAGE}:${BUILD_NUMBER}</li>
+                        <li><strong>Backend:</strong> ${BACKEND_IMAGE}:${BUILD_NUMBER}</li>
                     </ul>
                     
                     <h3>🌐 Application déployée:</h3>
