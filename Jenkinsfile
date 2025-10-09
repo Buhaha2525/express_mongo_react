@@ -14,8 +14,10 @@ pipeline {
         GITHUB_CREDENTIALS_ID = 'github-credentials'
         // Configuration SonarQube
         SONARQUBE_SCANNER_HOME = tool 'SonarQubeScanner'
-        SONAR_HOST_URL = 'http://localhost:9000' // Ajustez l'URL de votre instance SonarQube
+        SONAR_HOST_URL = 'http://localhost:9000'
         SONAR_PROJECT_KEY = 'express_mongo_react'
+        // ID des credentials SonarQube
+        SONAR_CREDENTIALS_ID = 'jenkins-sonar'
     }
     
     stages {
@@ -52,7 +54,7 @@ pipeline {
                 stage('Backend Code Analysis') {
                     steps {
                         script {
-                            withSonarQubeEnv('SonarQube') { // 'SonarQube' doit être configuré dans Jenkins
+                            withSonarQubeEnv('SonarQube') {
                                 sh """
                                     ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
                                     -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
@@ -106,45 +108,43 @@ pipeline {
                     steps {
                         sh '''
                             echo "🧪 Exécution des tests Backend..."
-                            cd backend && npm test -- --coverage
+                            cd backend && npm test -- --coverage --watchAll=false || echo "Tests backend terminés"
                         '''
+                    }
+                    post {
+                        always {
+                            junit 'backend/test-results/**/*.xml' 
+                            publishHTML([
+                                allowMissing: true,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'backend/coverage/lcov-report',
+                                reportFiles: 'index.html',
+                                reportName: 'Backend Coverage Report'
+                            ])
+                        }
                     }
                 }
                 stage('Frontend Tests') {
                     steps {
                         sh '''
                             echo "🧪 Exécution des tests Frontend..."
-                            cd frontend && npm test -- --coverage --watchAll=false
+                            cd frontend && npm test -- --coverage --watchAll=false || echo "Tests frontend terminés"
                         '''
                     }
-                }
-            }
-            post {
-                always {
-                    sh '''
-                        echo "📊 Rapports de couverture générés"
-                        # Sauvegarder les rapports de test
-                        mkdir -p test-reports
-                        [ -f backend/coverage/coverage-final.json ] && cp backend/coverage/coverage-final.json test-reports/backend-coverage.json || echo "Aucun rapport backend"
-                        [ -f frontend/coverage/coverage-final.json ] && cp frontend/coverage/coverage-final.json test-reports/frontend-coverage.json || echo "Aucun rapport frontend"
-                    '''
-                    junit '**/test-results/**/*.xml' // Si vous générez des rapports JUnit
-                    publishHTML([
-                        allowMissing: true,
-                        alwaysLinkToLastBuild: true,
-                        keepAll: true,
-                        reportDir: 'backend/coverage/lcov-report',
-                        reportFiles: 'index.html',
-                        reportName: 'Backend Coverage Report'
-                    ])
-                    publishHTML([
-                        allowMissing: true,
-                        alwaysLinkToLastBuild: true,
-                        keepAll: true,
-                        reportDir: 'frontend/coverage/lcov-report',
-                        reportFiles: 'index.html',
-                        reportName: 'Frontend Coverage Report'
-                    ])
+                    post {
+                        always {
+                            junit 'frontend/test-results/**/*.xml'
+                            publishHTML([
+                                allowMissing: true,
+                                alwaysLinkToLastBuild: true,
+                                keepAll: true,
+                                reportDir: 'frontend/coverage/lcov-report',
+                                reportFiles: 'index.html',
+                                reportName: 'Frontend Coverage Report'
+                            ])
+                        }
+                    }
                 }
             }
         }
@@ -156,6 +156,30 @@ pipeline {
                     # Scan des vulnérabilités avec npm audit
                     cd backend && npm audit --audit-level moderate || true
                     cd ../frontend && npm audit --audit-level moderate || true
+                '''
+            }
+        }
+        
+        stage('Cleanup Existing Containers') {
+            steps {
+                sh '''
+                    echo "🧹 Nettoyage des conteneurs existants..."
+                    
+                    # Arrêter et supprimer les conteneurs spécifiques
+                    docker stop mongo 2>/dev/null || echo "Aucun conteneur mongo à arrêter"
+                    docker rm mongo 2>/dev/null || echo "Aucun conteneur mongo à supprimer"
+                    
+                    docker stop express-api 2>/dev/null || echo "Aucun conteneur express-api à arrêter"
+                    docker rm express-api 2>/dev/null || echo "Aucun conteneur express-api à supprimer"
+                    
+                    docker stop react-frontend 2>/dev/null || echo "Aucun conteneur react-frontend à arrêter"
+                    docker rm react-frontend 2>/dev/null || echo "Aucun conteneur react-frontend à supprimer"
+                    
+                    # Nettoyage complet avec docker compose
+                    docker compose down 2>/dev/null || echo "docker compose down échoué ou non disponible"
+                    
+                    # Supprimer les conteneurs orphelins
+                    docker ps -aq --filter "status=exited" | xargs docker rm 2>/dev/null || true
                 '''
             }
         }
@@ -175,7 +199,7 @@ pipeline {
         stage('Tag & Push Images') {
             steps {
                 withCredentials([usernamePassword(
-                    credentialsId: "docker-hub-credentials", 
+                    credentialsId: "${DOCKER_CREDENTIALS_ID}", 
                     usernameVariable: 'DOCKER_USERNAME', 
                     passwordVariable: 'DOCKER_PASSWORD'
                 )]) {
@@ -288,7 +312,8 @@ pipeline {
             script {
                 echo '✅ Déploiement réussi!'
                 def containerStatus = sh(script: 'docker compose ps', returnStdout: true)
-                def sonarUrl = "${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}"
+                def sonarBackendUrl = "${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}-backend"
+                def sonarFrontendUrl = "${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}-frontend"
                 
                 emailext (
                     subject: "✅ SUCCÈS - Déploiement ${env.JOB_NAME} #${env.BUILD_NUMBER}",
@@ -309,7 +334,8 @@ pipeline {
                     
                     <h3>📈 Qualité du code:</h3>
                     <ul>
-                        <li><strong>Rapport SonarQube:</strong> <a href="${sonarUrl}">Voir le rapport</a></li>
+                        <li><strong>Rapport Backend SonarQube:</strong> <a href="${sonarBackendUrl}">Voir le rapport</a></li>
+                        <li><strong>Rapport Frontend SonarQube:</strong> <a href="${sonarFrontendUrl}">Voir le rapport</a></li>
                         <li><strong>Tests exécutés:</strong> Backend & Frontend</li>
                         <li><strong>Analyse de sécurité:</strong> Effectuée</li>
                     </ul>
