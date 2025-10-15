@@ -85,34 +85,34 @@ spec:
     }
 
     stages {
-        stage('Checkout et Préparation') {
+        stage('Checkout et Preparation') {
             steps {
                 container('node') {
                     checkout scm
                     sh '''
-                        echo "📁 Structure du projet:"
+                        echo "Structure du projet:"
                         ls -la
                         echo ""
-                        echo "📦 Backend:"
+                        echo "Backend:"
                         ls -la back-end/
                         echo ""
-                        echo "🎨 Frontend:"
+                        echo "Frontend:"
                         ls -la front-end/
                     '''
                 }
             }
         }
 
-        stage('Installation des Dépendances') {
+        stage('Installation des Dependances') {
             parallel {
                 stage('Frontend Dependencies') {
                     steps {
                         container('node') {
                             sh '''
-                                echo "📦 Installation des dépendances Frontend..."
+                                echo "Installation des dependances Frontend..."
                                 cd front-end
                                 npm install
-                                echo "✅ Frontend dependencies installées"
+                                echo "Frontend dependencies installees"
                             '''
                         }
                     }
@@ -121,10 +121,10 @@ spec:
                     steps {
                         container('node') {
                             sh '''
-                                echo "📦 Installation des dépendances Backend..."
+                                echo "Installation des dependances Backend..."
                                 cd back-end
                                 npm install
-                                echo "✅ Backend dependencies installées"
+                                echo "Backend dependencies installees"
                             '''
                         }
                     }
@@ -132,15 +132,15 @@ spec:
             }
         }
 
-        stage('Tests et Qualité') {
+        stage('Tests et Qualite') {
             parallel {
                 stage('Tests Backend') {
                     steps {
                         container('node') {
                             sh '''
-                                echo "🧪 Tests Backend..."
+                                echo "Tests Backend..."
                                 cd back-end
-                                npm test || echo "⚠️ Tests échoués mais continuation"
+                                npm test || echo "Tests echoues mais continuation"
                             '''
                         }
                     }
@@ -151,7 +151,7 @@ spec:
                             script {
                                 withSonarQubeEnv('SonarQube') {
                                     sh """
-                                        echo "🔍 Analyse SonarQube Backend..."
+                                        echo "Analyse SonarQube Backend..."
                                         ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
                                         -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
                                         -Dsonar.projectName='Express Backend' \
@@ -159,7 +159,7 @@ spec:
                                         -Dsonar.exclusions=**/node_modules/**,**/coverage/** \
                                         -Dsonar.sourceEncoding=UTF-8
                                         
-                                        echo "🔍 Analyse SonarQube Frontend..."
+                                        echo "Analyse SonarQube Frontend..."
                                         ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
                                         -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
                                         -Dsonar.projectName='React Frontend' \
@@ -181,10 +181,10 @@ spec:
                     steps {
                         container('node') {
                             sh '''
-                                echo "🏗️ Build Frontend..."
+                                echo "Build Frontend..."
                                 cd front-end
                                 npm run build
-                                echo "✅ Frontend build réussi"
+                                echo "Frontend build reussi"
                             '''
                         }
                     }
@@ -193,10 +193,10 @@ spec:
                     steps {
                         container('node') {
                             sh '''
-                                echo "🏗️ Build Backend..."
+                                echo "Build Backend..."
                                 cd back-end
-                                npm run build || echo "⚠️ Pas de script build, continuation"
-                                echo "✅ Backend prêt"
+                                npm run build || echo "Pas de script build, continuation"
+                                echo "Backend pret"
                             '''
                         }
                     }
@@ -209,15 +209,15 @@ spec:
                 container('docker') {
                     script {
                         sh """
-                            echo "🐳 Build image Frontend..."
+                            echo "Build image Frontend..."
                             docker build -t ${FRONTEND_IMAGE}:${BUILD_NUMBER} ./front-end
                             docker tag ${FRONTEND_IMAGE}:${BUILD_NUMBER} ${FRONTEND_IMAGE}:latest
                             
-                            echo "🐳 Build image Backend..."
+                            echo "Build image Backend..."
                             docker build -t ${BACKEND_IMAGE}:${BUILD_NUMBER} ./back-end
                             docker tag ${BACKEND_IMAGE}:${BUILD_NUMBER} ${BACKEND_IMAGE}:latest
                             
-                            echo "📋 Images créées:"
+                            echo "Images creees:"
                             docker images | grep "${DOCKER_REGISTRY}"
                         """
                     }
@@ -225,35 +225,35 @@ spec:
             }
         }
 
-        stage('Déploiement Kubernetes') {
+        stage('Deploiement Kubernetes') {
             steps {
                 container('kubectl') {
                     script {
-                        // Préparer les manifests
+                        // Preparer les manifests
                         sh '''
-                            echo "📝 Préparation des manifests Kubernetes..."
+                            echo "Preparation des manifests Kubernetes..."
                             mkdir -p k8s
                             
                             # Copier les manifests s'ils existent
-                            cp -f back-end/k8s-deployment.yaml k8s/backend-deployment.yaml 2>/dev/null || echo "⚠️ Manifest backend non trouvé"
-                            cp -f front-end/k8s-deployment.yaml k8s/frontend-deployment.yaml 2>/dev/null || echo "⚠️ Manifest frontend non trouvé"
-                            cp -f mongo/k8s-deployment.yaml k8s/mongo-deployment.yaml 2>/dev/null || echo "⚠️ Manifest mongo non trouvé"
+                            cp -f back-end/k8s-deployment.yaml k8s/backend-deployment.yaml 2>/dev/null || echo "Manifest backend non trouve"
+                            cp -f front-end/k8s-deployment.yaml k8s/frontend-deployment.yaml 2>/dev/null || echo "Manifest frontend non trouve"
+                            cp -f mongo/k8s-deployment.yaml k8s/mongo-deployment.yaml 2>/dev/null || echo "Manifest mongo non trouve"
                         '''
 
-                        // Créer les manifests si ils n'existent pas
+                        // Creer les manifests si ils n'existent pas
                         sh """
-                            # Créer le namespace
+                            # Creer le namespace
                             kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
                             
-                            echo "🚀 Déploiement en cours..."
+                            echo "Deploiement en cours..."
                             
-                            # Déployer MongoDB
+                            # Deployer MongoDB
                             if [ -f "k8s/mongo-deployment.yaml" ]; then
                                 kubectl apply -f k8s/mongo-deployment.yaml -n ${K8S_NAMESPACE}
-                                echo "⏳ Attente du démarrage de MongoDB..."
+                                echo "Attente du demarrage de MongoDB..."
                                 sleep 30
                             else
-                                echo "📦 Déploiement de MongoDB..."
+                                echo "Deploiement de MongoDB..."
                                 kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -320,12 +320,12 @@ EOF
                                 sleep 30
                             fi
                             
-                            # Déployer le Backend
+                            # Deployer le Backend
                             if [ -f "k8s/backend-deployment.yaml" ]; then
                                 sed -i "s|image:.*|image: ${BACKEND_IMAGE}:${BUILD_NUMBER}|g" k8s/backend-deployment.yaml
                                 kubectl apply -f k8s/backend-deployment.yaml -n ${K8S_NAMESPACE}
                             else
-                                echo "🔧 Déploiement du Backend..."
+                                echo "Deploiement du Backend..."
                                 kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -382,12 +382,12 @@ spec:
 EOF
                             fi
                             
-                            # Déployer le Frontend
+                            # Deployer le Frontend
                             if [ -f "k8s/frontend-deployment.yaml" ]; then
                                 sed -i "s|image:.*|image: ${FRONTEND_IMAGE}:${BUILD_NUMBER}|g" k8s/frontend-deployment.yaml
                                 kubectl apply -f k8s/frontend-deployment.yaml -n ${K8S_NAMESPACE}
                             else
-                                echo "🎨 Déploiement du Frontend..."
+                                echo "Deploiement du Frontend..."
                                 kubectl apply -f - <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -435,7 +435,7 @@ spec:
 EOF
                             fi
                             
-                            # Déployer l'Ingress
+                            # Deployer l'Ingress
                             kubectl apply -f - <<EOF
 apiVersion: networking.k8s.io/v1
 kind: Ingress
@@ -469,29 +469,29 @@ EOF
             }
         }
 
-        stage('Vérification du Déploiement') {
+        stage('Verification du Deploiement') {
             steps {
                 container('kubectl') {
                     sh '''
-                        echo "⏳ Attente du démarrage des pods..."
+                        echo "Attente du demarrage des pods..."
                         sleep 60
                         
-                        echo "📊 État du déploiement:"
+                        echo "Etat du deploiement:"
                         kubectl get all -n ${K8S_NAMESPACE}
                         
-                        echo "🔍 Détails des pods:"
+                        echo "Details des pods:"
                         kubectl get pods -n ${K8S_NAMESPACE} -o wide
                         
-                        echo "🌐 Services:"
+                        echo "Services:"
                         kubectl get services -n ${K8S_NAMESPACE}
                         
-                        echo "🔗 Ingress:"
+                        echo "Ingress:"
                         kubectl get ingress -n ${K8S_NAMESPACE}
                         
-                        # Vérifier la santé des pods
-                        echo "🏥 Vérification de la santé:"
-                        kubectl logs -n ${K8S_NAMESPACE} -l app=express-backend --tail=10 || echo "⚠️ Logs backend non disponibles"
-                        kubectl logs -n ${K8S_NAMESPACE} -l app=react-frontend --tail=10 || echo "⚠️ Logs frontend non disponibles"
+                        # Verifier la sante des pods
+                        echo "Verification de la sante:"
+                        kubectl logs -n ${K8S_NAMESPACE} -l app=express-backend --tail=10 || echo "Logs backend non disponibles"
+                        kubectl logs -n ${K8S_NAMESPACE} -l app=react-frontend --tail=10 || echo "Logs frontend non disponibles"
                     '''
                 }
             }
@@ -502,14 +502,14 @@ EOF
         always {
             container('kubectl') {
                 sh '''
-                    echo "📋 Rapport final:"
+                    echo "Rapport final:"
                     echo "===================="
                     kubectl get pods -n ${K8S_NAMESPACE}
                     echo ""
                     
                     # Obtenir l'URL de l'application
                     MINIKUBE_IP=$(minikube ip 2>/dev/null || echo "localhost")
-                    echo "🎯 Votre application est disponible à:"
+                    echo "Votre application est disponible a:"
                     echo "   Frontend: http://${MINIKUBE_IP}"
                     echo "   Backend:  http://${MINIKUBE_IP}/api"
                     echo "   MongoDB:  mongodb://${MINIKUBE_IP}:27017"
@@ -518,34 +518,37 @@ EOF
             
             // Nettoyage
             sh '''
-                echo "🧹 Nettoyage des ressources temporaires..."
+                echo "Nettoyage des ressources temporaires..."
                 docker system prune -f 2>/dev/null || true
             '''
         }
         
         success {
-            echo '✅ 🎉 Déploiement réussi! Votre application est en ligne.'
-            emailext (
-                subject: "✅ SUCCÈS - Déploiement ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                body: """
-                Le pipeline ${env.JOB_NAME} #${env.BUILD_NUMBER} a réussi.
-                
-                Application déployée avec succès sur Kubernetes.
-                URLs d'accès:
-                - Frontend: http://$(minikube ip 2>/dev/null || echo "localhost")
-                - Backend API: http://$(minikube ip 2>/dev/null || echo "localhost")/api
-                
-                Bonne journée!
-                """,
-                to: "sowdmzz@gmail.com"
-            )
+            echo 'Deploiement reussi! Votre application est en ligne.'
+            script {
+                def minikubeIp = sh(script: 'minikube ip 2>/dev/null || echo "localhost"', returnStdout: true).trim()
+                emailext (
+                    subject: "SUCCES - Deploiement ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                    body: """
+                    Le pipeline ${env.JOB_NAME} #${env.BUILD_NUMBER} a reussi.
+                    
+                    Application deployee avec succes sur Kubernetes.
+                    URLs d'acces:
+                    - Frontend: http://${minikubeIp}
+                    - Backend API: http://${minikubeIp}/api
+                    
+                    Bonne journee!
+                    """,
+                    to: "sowdmzz@gmail.com"
+                )
+            }
         }
         
         failure {
-            echo '❌ Échec du déploiement. Vérifiez les logs.'
+            echo 'Echec du deploiement. Verifiez les logs.'
             container('kubectl') {
                 sh '''
-                    echo "🔍 Debug information:"
+                    echo "Debug information:"
                     kubectl describe pods -n ${K8S_NAMESPACE} || true
                     kubectl get events -n ${K8S_NAMESPACE} --sort-by=.lastTimestamp | tail -20 || true
                 '''
