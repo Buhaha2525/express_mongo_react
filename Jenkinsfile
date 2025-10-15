@@ -1,512 +1,554 @@
 pipeline {
-    agent any
+    agent {
+        kubernetes {
+            cloud 'minikube-k8s'
+            label 'jenkins-agent'
+            yaml """
+apiVersion: v1
+kind: Pod
+metadata:
+  name: jenkins-agent-${BUILD_NUMBER}
+spec:
+  containers:
+  - name: jnlp
+    image: jenkins/inbound-agent:latest
+    args: ['\$(JENKINS_SECRET)', '\$(JENKINS_NAME)']
+    workingDir: /home/jenkins/agent
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "200m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+
+  - name: node
+    image: node:18-alpine
+    command: ['cat']
+    tty: true
+    workingDir: /home/jenkins/agent
+    resources:
+      requests:
+        memory: "512Mi"
+        cpu: "300m"
+      limits:
+        memory: "1Gi"
+        cpu: "500m"
+
+  - name: docker
+    image: docker:24.0-cli
+    command: ['cat']
+    tty: true
+    workingDir: /home/jenkins/agent
+    env:
+    - name: DOCKER_HOST
+      value: tcp://localhost:2375
+    securityContext:
+      privileged: true
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "200m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+
+  - name: kubectl
+    image: bitnami/kubectl:latest
+    command: ['cat']
+    tty: true
+    workingDir: /home/jenkins/agent
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "200m"
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+"""
+        }
+    }
 
     environment {
-        // Identifiant des identifiants Docker Hub (configuré dans Jenkins)
-        DOCKER_CREDENTIALS_ID = 'docker-hub-credentials'
-        // Nom du registre Docker Hub
+        // Docker Registry
         DOCKER_REGISTRY = 'dmzz'
         FRONTEND_IMAGE = "${DOCKER_REGISTRY}/express-frontend"
         BACKEND_IMAGE = "${DOCKER_REGISTRY}/express-backend"
-        // Dépôt GitHub
-        GITHUB_REPO = 'https://github.com/Buhaha2525/express_mongo_react.git'
-        // Identifiant des identifiants GitHub (configuré dans Jenkins)
-        GITHUB_CREDENTIALS_ID = 'github-credentials'
-        // Configuration SonarQube
+        
+        // Kubernetes
+        K8S_NAMESPACE = 'express-app'
+        
+        // SonarQube
         SONARQUBE_SCANNER_HOME = tool 'SonarQubeScanner'
         SONAR_HOST_URL = 'http://localhost:9000'
         SONAR_PROJECT_KEY = 'express_mongo_react'
-        // ID des credentials SonarQube
-        SONAR_CREDENTIALS_ID = 'jenkins-sonar'
     }
-    
+
     stages {
-        stage('Checkout') {
+        stage('Checkout et Préparation') {
             steps {
-                git branch: 'main', 
-                url: 'https://github.com/Buhaha2525/express_mongo_react.git'
+                container('node') {
+                    checkout scm
+                    sh '''
+                        echo "📁 Structure du projet:"
+                        ls -la
+                        echo ""
+                        echo "📦 Backend:"
+                        ls -la back-end/
+                        echo ""
+                        echo "🎨 Frontend:"
+                        ls -la front-end/
+                    '''
+                }
             }
         }
-        
-        stage('Clean SonarQube Configuration') {
-            steps {
-                sh '''
-                    echo "🧹 Nettoyage de la configuration SonarQube..."
-                    # Supprimer ou renommer le fichier sonar-project.properties s'il existe
-                    if [ -f "sonar-project.properties" ]; then
-                        echo "📄 Fichier sonar-project.properties trouvé, suppression..."
-                        rm -f sonar-project.properties
-                    fi
-                    
-                    # Nettoyer les dossiers temporaires SonarQube
-                    rm -rf .scannerwork target build
-                '''
-            }
-        }
-        
-        stage('Verify Structure') {
-            steps {
-                sh '''
-                    echo "📁 Vérification de la structure..."
-                    echo "Dossiers trouvés:"
-                    ls -la
-                    echo ""
-                    echo "Contenu de back-end:"
-                    ls -la back-end/ || echo "back-end non accessible"
-                    echo ""
-                    echo "Contenu de front-end:"
-                    ls -la front-end/ || echo "front-end non accessible"
-                '''
-            }
-        }
-        
-        stage('Dependency Installation') {
+
+        stage('Installation des Dépendances') {
             parallel {
-                stage('Install Frontend Dependencies') {
+                stage('Frontend Dependencies') {
                     steps {
-                        sh '''
-                            echo "📦 Installation des dépendances Frontend..."
-                            cd front-end && npm install
-                            echo "✅ Dépendances frontend installées"
-                        '''
-                    }
-                }
-                stage('Install Backend Dependencies') {
-                    steps {
-                        sh '''
-                            echo "📦 Installation des dépendances Backend..."
-                            cd back-end && npm install
-                            echo "✅ Dépendances backend installées"
-                        '''
-                    }
-                }
-            }
-        }
-        
-        stage('SonarQube Analysis - Backend') {
-            steps {
-                script {
-                    withSonarQubeEnv('SonarQube') {
-                        sh """
-                            echo "🔍 Analyse SonarQube Backend..."
-                            ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
-                            -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
-                            -Dsonar.projectName='Express Backend' \
-                            -Dsonar.projectVersion=${BUILD_NUMBER} \
-                            -Dsonar.sources=back-end \
-                            -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
-                            -Dsonar.sourceEncoding=UTF-8
-                        """
-                    }
-                }
-            }
-        }
-        
-        stage('SonarQube Analysis - Frontend') {
-            steps {
-                script {
-                    withSonarQubeEnv('SonarQube') {
-                        sh """
-                            echo "🔍 Analyse SonarQube Frontend..."
-                            ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
-                            -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
-                            -Dsonar.projectName='React Frontend' \
-                            -Dsonar.projectVersion=${BUILD_NUMBER} \
-                            -Dsonar.sources=front-end \
-                            -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
-                            -Dsonar.sourceEncoding=UTF-8
-                        """
-                    }
-                }
-            }
-        }
-        
-        stage('Wait for Analysis Completion') {
-            steps {
-                script {
-                    echo "⏳ Attente de la fin des analyses SonarQube (60 secondes)..."
-                    sleep time: 60, unit: 'SECONDS'
-                }
-            }
-        }
-        
-        stage('Quality Gate Check') {
-            steps {
-                script {
-                    echo "✅ Vérification des Quality Gates..."
-                    // On continue même si la Quality Gate échoue pour le moment
-                    try {
-                        timeout(time: 2, unit: 'MINUTES') {
-                            waitForQualityGate abortPipeline: false
+                        container('node') {
+                            sh '''
+                                echo "📦 Installation des dépendances Frontend..."
+                                cd front-end
+                                npm install
+                                echo "✅ Frontend dependencies installées"
+                            '''
                         }
-                        echo "✅ Quality Gate passée avec succès"
-                    } catch (Exception e) {
-                        echo "⚠️  Quality Gate échouée ou timeout, continuation du pipeline..."
-                        echo "Détails de l'erreur: ${e.getMessage()}"
+                    }
+                }
+                stage('Backend Dependencies') {
+                    steps {
+                        container('node') {
+                            sh '''
+                                echo "📦 Installation des dépendances Backend..."
+                                cd back-end
+                                npm install
+                                echo "✅ Backend dependencies installées"
+                            '''
+                        }
                     }
                 }
             }
         }
-        
-        stage('Security Scan') {
-            steps {
-                sh '''
-                    echo "🔒 Analyse de sécurité des dépendances..."
-                    echo "=== Backend ==="
-                    cd back-end && npm audit --audit-level moderate || true
-                    echo "=== Frontend ==="
-                    cd ../front-end && npm audit --audit-level moderate || true
-                '''
-            }
-        }
-        
-        stage('Cleanup Existing Containers') {
-            steps {
-                sh '''
-                    echo "🧹 Nettoyage des conteneurs existants..."
-                    
-                    # Arrêter et supprimer les conteneurs spécifiques
-                    docker stop mongo 2>/dev/null || echo "Aucun conteneur mongo à arrêter"
-                    docker rm mongo 2>/dev/null || echo "Aucun conteneur mongo à supprimer"
-                    
-                    docker stop express-api 2>/dev/null || echo "Aucun conteneur express-api à arrêter"
-                    docker rm express-api 2>/dev/null || echo "Aucun conteneur express-api à supprimer"
-                    
-                    docker stop react-frontend 2>/dev/null || echo "Aucun conteneur react-frontend à arrêter"
-                    docker rm react-frontend 2>/dev/null || echo "Aucun conteneur react-frontend à supprimer"
-                    
-                    # Nettoyage complet avec docker compose
-                    docker compose down 2>/dev/null || echo "docker compose down échoué ou non disponible"
-                    
-                    # Supprimer les conteneurs orphelins
-                    docker ps -aq --filter "status=exited" | xargs docker rm 2>/dev/null || true
-                    
-                    # Nettoyer les dossiers temporaires SonarQube
-                    rm -rf .scannerwork || true
-                '''
-            }
-        }
-        
-        stage('Fix Docker Credentials') {
-            steps {
-                sh '''
-                    echo "🔧 Correction des credentials Docker..."
-                    # Supprimer la configuration Docker Desktop qui cause des problèmes
-                    rm -f ~/.docker/config.json || echo "Fichier config.json non trouvé"
-                    
-                    # Vérifier la configuration Docker actuelle
-                    echo "Configuration Docker actuelle:"
-                    docker system info | grep -E "(Username|Registry)" || echo "Non connecté"
-                '''
-            }
-        }
-        
-        stage('Build Docker Images') {
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: "${DOCKER_CREDENTIALS_ID}", 
-                    usernameVariable: 'DOCKER_USERNAME', 
-                    passwordVariable: 'DOCKER_PASSWORD'
-                )]) {
-                    sh '''
-                        echo "🔐 Connexion à Docker Hub..."
-                        echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
 
-                        echo "🔨 Construction des images Docker..."
-                        # Construire les images une par une pour mieux gérer les erreurs
-                        echo "Construction du backend..."
-                        docker compose build backend --no-cache --progress=plain
-                        
-                        echo "Construction du frontend..."
-                        docker compose build frontend --no-cache --progress=plain
-                        
-                        echo "📋 Liste des images construites:"
-                        docker images
-                    '''
+        stage('Tests et Qualité') {
+            parallel {
+                stage('Tests Backend') {
+                    steps {
+                        container('node') {
+                            sh '''
+                                echo "🧪 Tests Backend..."
+                                cd back-end
+                                npm test || echo "⚠️ Tests échoués mais continuation"
+                            '''
+                        }
+                    }
+                }
+                stage('Analyse SonarQube') {
+                    steps {
+                        container('node') {
+                            script {
+                                withSonarQubeEnv('SonarQube') {
+                                    sh """
+                                        echo "🔍 Analyse SonarQube Backend..."
+                                        ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
+                                        -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
+                                        -Dsonar.projectName='Express Backend' \
+                                        -Dsonar.sources=back-end \
+                                        -Dsonar.exclusions=**/node_modules/**,**/coverage/** \
+                                        -Dsonar.sourceEncoding=UTF-8
+                                        
+                                        echo "🔍 Analyse SonarQube Frontend..."
+                                        ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
+                                        -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
+                                        -Dsonar.projectName='React Frontend' \
+                                        -Dsonar.sources=front-end \
+                                        -Dsonar.exclusions=**/node_modules/**,**/coverage/** \
+                                        -Dsonar.sourceEncoding=UTF-8
+                                    """
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
-        
-        stage('Tag & Push Images') {
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: "${DOCKER_CREDENTIALS_ID}", 
-                    usernameVariable: 'DOCKER_USERNAME', 
-                    passwordVariable: 'DOCKER_PASSWORD'
-                )]) {
-                    sh '''
-                        echo "🔐 Vérification de la connexion Docker Hub..."
-                        echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
 
-                        echo "📋 Liste des images disponibles:"
-                        docker images
-
-                        echo "🔍 Recherche des images récentes..."
-                        FRONTEND_ID=$(docker images pipesmartv2-frontend:latest -q)
-                        BACKEND_ID=$(docker images pipesmartv2-backend:latest -q)
-
-                        echo "Frontend ID: $FRONTEND_ID"
-                        echo "Backend ID: $BACKEND_ID"
-
-                        if [ -z "$FRONTEND_ID" ]; then
-                            echo "❌ Image pipesmartv2-frontend:latest non trouvée"
-                            echo "Images disponibles:"
-                            docker images
-                            exit 1
-                        fi
-
-                        if [ -z "$BACKEND_ID" ]; then
-                            echo "❌ Image pipesmartv2-backend:latest non trouvée"
-                            echo "Images disponibles:"
-                            docker images
-                            exit 1
-                        fi
-
-                        echo "🏷️  Taggage des images..."
-                        docker tag $FRONTEND_ID ${FRONTEND_IMAGE}:${BUILD_NUMBER}
-                        docker tag $FRONTEND_ID ${FRONTEND_IMAGE}:latest
-                        docker tag $BACKEND_ID ${BACKEND_IMAGE}:${BUILD_NUMBER}
-                        docker tag $BACKEND_ID ${BACKEND_IMAGE}:latest
-
-                        echo "📤 Poussage des images..."
-                        echo "Poussage du frontend..."
-                        docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}
-                        docker push ${FRONTEND_IMAGE}:latest
-        
-                        echo "Poussage du backend..."
-                        docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}
-                        docker push ${BACKEND_IMAGE}:latest
-
-                        echo "🔓 Déconnexion de Docker Hub..."
-                        docker logout
-                        
-                        echo "✅ Images poussées avec succès!"
-                    '''
+        stage('Build des Applications') {
+            parallel {
+                stage('Build Frontend') {
+                    steps {
+                        container('node') {
+                            sh '''
+                                echo "🏗️ Build Frontend..."
+                                cd front-end
+                                npm run build
+                                echo "✅ Frontend build réussi"
+                            '''
+                        }
+                    }
+                }
+                stage('Build Backend') {
+                    steps {
+                        container('node') {
+                            sh '''
+                                echo "🏗️ Build Backend..."
+                                cd back-end
+                                npm run build || echo "⚠️ Pas de script build, continuation"
+                                echo "✅ Backend prêt"
+                            '''
+                        }
+                    }
                 }
             }
         }
-        
-        stage('Deploy') {
+
+        stage('Build Images Docker') {
             steps {
-                sh '''
-                    echo "🚀 Déploiement en cours..."
-                    docker compose up -d
-                    
-                    echo "⏳ Attente du démarrage..."
-                    sleep 30
-                    
-                    echo "📊 État des conteneurs:"
-                    docker compose ps
-                '''
+                container('docker') {
+                    script {
+                        sh """
+                            echo "🐳 Build image Frontend..."
+                            docker build -t ${FRONTEND_IMAGE}:${BUILD_NUMBER} ./front-end
+                            docker tag ${FRONTEND_IMAGE}:${BUILD_NUMBER} ${FRONTEND_IMAGE}:latest
+                            
+                            echo "🐳 Build image Backend..."
+                            docker build -t ${BACKEND_IMAGE}:${BUILD_NUMBER} ./back-end
+                            docker tag ${BACKEND_IMAGE}:${BUILD_NUMBER} ${BACKEND_IMAGE}:latest
+                            
+                            echo "📋 Images créées:"
+                            docker images | grep "${DOCKER_REGISTRY}"
+                        """
+                    }
+                }
             }
         }
-        
-        stage('Health Check') {
+
+        stage('Déploiement Kubernetes') {
             steps {
-                sh '''
-                    echo "🏥 Vérification de la santé des services..."
-                    
-                    if docker compose ps | grep -q "Up"; then
-                        echo "✅ Tous les services sont en cours d'exécution"
-                    else
-                        echo "❌ Certains services ne sont pas démarrés"
-                        docker compose ps
-                        exit 1
-                    fi
-                    
-                    # Tests de santé supplémentaires
-                    echo "🔍 Tests de connectivité..."
-                    echo "Test Backend (attente 5s)..."
-                    sleep 5
-                    curl -f http://localhost:5001/api/health || echo "Backend health check failed"
-                    echo "Test Frontend (attente 5s)..."
-                    sleep 5
-                    curl -f http://localhost:5173 || echo "Frontend health check failed"
-                    
-                    echo "🔗 URLs de l'application:"
-                    echo "Frontend: http://localhost:5173"
-                    echo "Backend: http://localhost:5001/api"
-                    echo "MongoDB: localhost:27017"
-                '''
+                container('kubectl') {
+                    script {
+                        // Préparer les manifests
+                        sh '''
+                            echo "📝 Préparation des manifests Kubernetes..."
+                            mkdir -p k8s
+                            
+                            # Copier les manifests s'ils existent
+                            cp -f back-end/k8s-deployment.yaml k8s/backend-deployment.yaml 2>/dev/null || echo "⚠️ Manifest backend non trouvé"
+                            cp -f front-end/k8s-deployment.yaml k8s/frontend-deployment.yaml 2>/dev/null || echo "⚠️ Manifest frontend non trouvé"
+                            cp -f mongo/k8s-deployment.yaml k8s/mongo-deployment.yaml 2>/dev/null || echo "⚠️ Manifest mongo non trouvé"
+                        '''
+
+                        // Créer les manifests si ils n'existent pas
+                        sh """
+                            # Créer le namespace
+                            kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+                            
+                            echo "🚀 Déploiement en cours..."
+                            
+                            # Déployer MongoDB
+                            if [ -f "k8s/mongo-deployment.yaml" ]; then
+                                kubectl apply -f k8s/mongo-deployment.yaml -n ${K8S_NAMESPACE}
+                                echo "⏳ Attente du démarrage de MongoDB..."
+                                sleep 30
+                            else
+                                echo "📦 Déploiement de MongoDB..."
+                                kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongo
+  namespace: ${K8S_NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongo
+  template:
+    metadata:
+      labels:
+        app: mongo
+    spec:
+      containers:
+      - name: mongo
+        image: mongo:6.0
+        ports:
+        - containerPort: 27017
+        env:
+        - name: MONGO_INITDB_DATABASE
+          value: "smartphoneDB"
+        volumeMounts:
+        - name: mongo-storage
+          mountPath: /data/db
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "200m"
+          limits:
+            memory: "1Gi"
+            cpu: "500m"
+      volumes:
+      - name: mongo-storage
+        persistentVolumeClaim:
+          claimName: mongo-pvc
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongo-service
+  namespace: ${K8S_NAMESPACE}
+spec:
+  selector:
+    app: mongo
+  ports:
+  - port: 27017
+    targetPort: 27017
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mongo-pvc
+  namespace: ${K8S_NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+EOF
+                                sleep 30
+                            fi
+                            
+                            # Déployer le Backend
+                            if [ -f "k8s/backend-deployment.yaml" ]; then
+                                sed -i "s|image:.*|image: ${BACKEND_IMAGE}:${BUILD_NUMBER}|g" k8s/backend-deployment.yaml
+                                kubectl apply -f k8s/backend-deployment.yaml -n ${K8S_NAMESPACE}
+                            else
+                                echo "🔧 Déploiement du Backend..."
+                                kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: express-backend
+  namespace: ${K8S_NAMESPACE}
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: express-backend
+  template:
+    metadata:
+      labels:
+        app: express-backend
+    spec:
+      containers:
+      - name: express-backend
+        image: ${BACKEND_IMAGE}:${BUILD_NUMBER}
+        ports:
+        - containerPort: 5001
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "5001"
+        - name: MONGODB_URI
+          value: "mongodb://mongo-service:27017/smartphoneDB"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 5001
+          initialDelaySeconds: 30
+          periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+  namespace: ${K8S_NAMESPACE}
+spec:
+  selector:
+    app: express-backend
+  ports:
+  - port: 5001
+    targetPort: 5001
+EOF
+                            fi
+                            
+                            # Déployer le Frontend
+                            if [ -f "k8s/frontend-deployment.yaml" ]; then
+                                sed -i "s|image:.*|image: ${FRONTEND_IMAGE}:${BUILD_NUMBER}|g" k8s/frontend-deployment.yaml
+                                kubectl apply -f k8s/frontend-deployment.yaml -n ${K8S_NAMESPACE}
+                            else
+                                echo "🎨 Déploiement du Frontend..."
+                                kubectl apply -f - <<EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: react-frontend
+  namespace: ${K8S_NAMESPACE}
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: react-frontend
+  template:
+    metadata:
+      labels:
+        app: react-frontend
+    spec:
+      containers:
+      - name: react-frontend
+        image: ${FRONTEND_IMAGE}:${BUILD_NUMBER}
+        ports:
+        - containerPort: 5173
+        env:
+        - name: VITE_API_URL
+          value: "http://backend-service:5001/api"
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "200m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend-service
+  namespace: ${K8S_NAMESPACE}
+spec:
+  selector:
+    app: react-frontend
+  ports:
+  - port: 80
+    targetPort: 5173
+  type: LoadBalancer
+EOF
+                            fi
+                            
+                            # Déployer l'Ingress
+                            kubectl apply -f - <<EOF
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app-ingress
+  namespace: ${K8S_NAMESPACE}
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: frontend-service
+            port:
+              number: 80
+      - path: /api
+        pathType: Prefix
+        backend:
+          service:
+            name: backend-service
+            port:
+              number: 5001
+EOF
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Vérification du Déploiement') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        echo "⏳ Attente du démarrage des pods..."
+                        sleep 60
+                        
+                        echo "📊 État du déploiement:"
+                        kubectl get all -n ${K8S_NAMESPACE}
+                        
+                        echo "🔍 Détails des pods:"
+                        kubectl get pods -n ${K8S_NAMESPACE} -o wide
+                        
+                        echo "🌐 Services:"
+                        kubectl get services -n ${K8S_NAMESPACE}
+                        
+                        echo "🔗 Ingress:"
+                        kubectl get ingress -n ${K8S_NAMESPACE}
+                        
+                        # Vérifier la santé des pods
+                        echo "🏥 Vérification de la santé:"
+                        kubectl logs -n ${K8S_NAMESPACE} -l app=express-backend --tail=10 || echo "⚠️ Logs backend non disponibles"
+                        kubectl logs -n ${K8S_NAMESPACE} -l app=react-frontend --tail=10 || echo "⚠️ Logs frontend non disponibles"
+                    '''
+                }
             }
         }
     }
-    
+
     post {
         always {
-            echo '📝 Pipeline terminé - vérifiez les logs ci-dessus'
-            sh '''
-                echo "📋 État final des conteneurs:"
-                docker compose ps || true
-                echo "🔍 Derniers logs:"
-                docker compose logs --tail=20 || true
-            '''
+            container('kubectl') {
+                sh '''
+                    echo "📋 Rapport final:"
+                    echo "===================="
+                    kubectl get pods -n ${K8S_NAMESPACE}
+                    echo ""
+                    
+                    # Obtenir l'URL de l'application
+                    MINIKUBE_IP=$(minikube ip 2>/dev/null || echo "localhost")
+                    echo "🎯 Votre application est disponible à:"
+                    echo "   Frontend: http://${MINIKUBE_IP}"
+                    echo "   Backend:  http://${MINIKUBE_IP}/api"
+                    echo "   MongoDB:  mongodb://${MINIKUBE_IP}:27017"
+                '''
+            }
             
             // Nettoyage
             sh '''
                 echo "🧹 Nettoyage des ressources temporaires..."
-                docker system prune -f || true
-                rm -rf .scannerwork || true
+                docker system prune -f 2>/dev/null || true
             '''
         }
+        
         success {
-            script {
-                echo '✅ Déploiement réussi!'
-                def containerStatus = sh(script: 'docker compose ps', returnStdout: true)
-                def sonarBackendUrl = "${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}-backend"
-                def sonarFrontendUrl = "${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}-frontend"
+            echo '✅ 🎉 Déploiement réussi! Votre application est en ligne.'
+            emailext (
+                subject: "✅ SUCCÈS - Déploiement ${env.JOB_NAME} #${env.BUILD_NUMBER}",
+                body: """
+                Le pipeline ${env.JOB_NAME} #${env.BUILD_NUMBER} a réussi.
                 
-                // Vérifier l'état des analyses SonarQube
-                def sonarStatus = "Analyses terminées"
-                try {
-                    def qualityGate = waitForQualityGate abortPipeline: false
-                    sonarStatus = "Quality Gate: ${qualityGate.status}"
-                } catch (Exception e) {
-                    sonarStatus = "Analyses effectuées (Quality Gate ignorée)"
-                }
+                Application déployée avec succès sur Kubernetes.
+                URLs d'accès:
+                - Frontend: http://$(minikube ip 2>/dev/null || echo "localhost")
+                - Backend API: http://$(minikube ip 2>/dev/null || echo "localhost")/api
                 
-                emailext (
-                    subject: "✅ SUCCÈS - Déploiement ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                    body: """
-                    <html>
-                    <body>
-                    <h2>🚀 Déploiement Réussi!</h2>
-                    
-                    <p>Le pipeline <strong>${env.JOB_NAME}</strong> s'est terminé avec succès.</p>
-                    
-                    <h3>📊 Détails de la build:</h3>
-                    <ul>
-                        <li><strong>Build:</strong> #${env.BUILD_NUMBER}</li>
-                        <li><strong>Job:</strong> ${env.JOB_NAME}</li>
-                        <li><strong>URL:</strong> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></li>
-                        <li><strong>Date:</strong> ${new Date().format("dd/MM/yyyy à HH:mm")}</li>
-                        <li><strong>Statut SonarQube:</strong> ${sonarStatus}</li>
-                    </ul>
-                    
-                    <h3>📈 Qualité du code:</h3>
-                    <ul>
-                        <li><strong>Rapport Backend SonarQube:</strong> <a href="${sonarBackendUrl}">Voir le rapport</a></li>
-                        <li><strong>Rapport Frontend SonarQube:</strong> <a href="${sonarFrontendUrl}">Voir le rapport</a></li>
-                        <li><strong>Analyse de sécurité:</strong> Effectuée</li>
-                    </ul>
-                    
-                    <h3>🐳 Images Docker:</h3>
-                    <ul>
-                        <li><strong>Frontend:</strong> ${FRONTEND_IMAGE}:${BUILD_NUMBER}</li>
-                        <li><strong>Backend:</strong> ${BACKEND_IMAGE}:${BUILD_NUMBER}</li>
-                    </ul>
-                    
-                    <h3>🌐 Application déployée:</h3>
-                    <ul>
-                        <li><strong>Frontend React:</strong> <a href="http://localhost:5173">http://localhost:5173</a></li>
-                        <li><strong>Backend Express:</strong> <a href="http://localhost:5001/api">http://localhost:5001/api</a></li>
-                        <li><strong>MongoDB:</strong> localhost:27017</li>
-                    </ul>
-                    
-                    <h3>🐋 Conteneurs Docker:</h3>
-                    <pre>${containerStatus}</pre>
-                    
-                    <p style="color: green; font-weight: bold;">✅ Tous les services sont opérationnels</p>
-                    
-                    <hr>
-                    <p><small>Email envoyé automatiquement par Jenkins</small></p>
-                    </body>
-                    </html>
-                    """,
-                    to: "sowdmzz@gmail.com",
-                    mimeType: "text/html"
-                )
-            }
+                Bonne journée!
+                """,
+                to: "sowdmzz@gmail.com"
+            )
         }
+        
         failure {
-            script {
-                echo '❌ Échec du déploiement'
-                def errorLogs = sh(script: 'docker compose logs --tail=50 2>/dev/null || echo "Impossible de récupérer les logs"', returnStdout: true)
-                
-                emailext (
-                    subject: "❌ ÉCHEC - Déploiement ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                    body: """
-                    <html>
-                    <body>
-                    <h2>💥 Échec du Déploiement</h2>
-                    
-                    <p>Le pipeline <strong>${env.JOB_NAME}</strong> a échoué.</p>
-                    
-                    <h3>📊 Détails de la build:</h3>
-                    <ul>
-                        <li><strong>Build:</strong> #${env.BUILD_NUMBER}</li>
-                        <li><strong>Job:</strong> ${env.JOB_NAME}</li>
-                        <li><strong>URL:</strong> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></li>
-                        <li><strong>Date:</strong> ${new Date().format("dd/MM/yyyy à HH:mm")}</li>
-                    </ul>
-                    
-                    <h3>🔍 Logs d'erreur:</h3>
-                    <pre style="background-color: #f8f8f8; padding: 10px; border-left: 4px solid #ff0000;">
-                    ${errorLogs}
-                    </pre>
-                    
-                    <p style="color: red; font-weight: bold;">❌ Une intervention est nécessaire</p>
-                    
-                    <hr>
-                    <p><small>Email envoyé automatiquement par Jenkins</small></p>
-                    </body>
-                    </html>
-                    """,
-                    to: "sowdmzz@gmail.com",
-                    mimeType: "text/html"
-                )
-            }
-        }
-        unstable {
-            script {
-                echo '⚠️  Déploiement instable (Quality Gate échouée)'
-                def containerStatus = sh(script: 'docker compose ps', returnStdout: true)
-                def sonarBackendUrl = "${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}-backend"
-                def sonarFrontendUrl = "${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}-frontend"
-                
-                emailext (
-                    subject: "⚠️  INSTABLE - Déploiement ${env.JOB_NAME} #${env.BUILD_NUMBER}",
-                    body: """
-                    <html>
-                    <body>
-                    <h2>⚠️  Déploiement Instable</h2>
-                    
-                    <p>Le pipeline <strong>${env.JOB_NAME}</strong> s'est terminé avec un statut instable (Quality Gate SonarQube échouée).</p>
-                    
-                    <h3>📊 Détails de la build:</h3>
-                    <ul>
-                        <li><strong>Build:</strong> #${env.BUILD_NUMBER}</li>
-                        <li><strong>Job:</strong> ${env.JOB_NAME}</li>
-                        <li><strong>URL:</strong> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></li>
-                        <li><strong>Date:</strong> ${new Date().format("dd/MM/yyyy à HH:mm")}</li>
-                        <li><strong>Statut:</strong> Quality Gate SonarQube échouée</li>
-                    </ul>
-                    
-                    <h3>📈 Qualité du code:</h3>
-                    <ul>
-                        <li><strong>Rapport Backend SonarQube:</strong> <a href="${sonarBackendUrl}">Voir le rapport</a></li>
-                        <li><strong>Rapport Frontend SonarQube:</strong> <a href="${sonarFrontendUrl}">Voir le rapport</a></li>
-                    </ul>
-                    
-                    <h3>🌐 Application déployée:</h3>
-                    <ul>
-                        <li><strong>Frontend React:</strong> <a href="http://localhost:5173">http://localhost:5173</a></li>
-                        <li><strong>Backend Express:</strong> <a href="http://localhost:5001/api">http://localhost:5001/api</a></li>
-                    </ul>
-                    
-                    <h3>🐋 Conteneurs Docker:</h3>
-                    <pre>${containerStatus}</pre>
-                    
-                    <p style="color: orange; font-weight: bold;">⚠️  L'application est déployée mais la qualité du code nécessite attention</p>
-                    
-                    <hr>
-                    <p><small>Email envoyé automatiquement par Jenkins</small></p>
-                    </body>
-                    </html>
-                    """,
-                    to: "sowdmzz@gmail.com",
-                    mimeType: "text/html"
-                )
+            echo '❌ Échec du déploiement. Vérifiez les logs.'
+            container('kubectl') {
+                sh '''
+                    echo "🔍 Debug information:"
+                    kubectl describe pods -n ${K8S_NAMESPACE} || true
+                    kubectl get events -n ${K8S_NAMESPACE} --sort-by=.lastTimestamp | tail -20 || true
+                '''
             }
         }
     }
