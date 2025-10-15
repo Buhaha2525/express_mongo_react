@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: express-backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: express-backend
+  template:
+    metadata:
+      labels:
+        app: express-backend
+    spec:
+      containers:
+      - name: express-backend
+        image: dmzz/express-backend:latest  # Sera remplacé par Jenkins
+        ports:
+        - containerPort: 5001
+        env:
+        - name: NODE_ENV
+          value: "production"
+        - name: PORT
+          value: "5001"
+        - name: MONGODB_URI
+          value: "mongodb://mongo-service:27017/smartphoneDB"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backend-service
+spec:
+  selector:
+    app: express-backend
+  ports:
+  - port: 5001
+    targetPort: 5001
