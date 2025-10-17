@@ -14,7 +14,6 @@ pipeline {
         SONAR_PROJECT_KEY = 'express_mongo_react'
         // Configuration Email
         EMAIL_RECIPIENTS = 'sowdmzz@gmail.com'
-        BUILD_URL_DISPLAY = "${env.BUILD_URL}"
     }
     
     stages {
@@ -26,64 +25,162 @@ pipeline {
             }
         }
         
-        stage('Clean Workspace') {
-            steps {
-                cleanWs()
-            }
-        }
-        
-        stage('Verify Structure') {
+        stage('Analyse Structure') {
             steps {
                 sh '''
-                    echo "📁 Vérification de la structure..."
-                    echo "Dossiers trouvés:"
+                    echo "🔍 Analyse détaillée de la structure..."
+                    echo "=== Structure complète ==="
+                    find . -type f -name "package.json" | head -20
+                    echo ""
+                    echo "=== Arborescence racine ==="
                     ls -la
                     echo ""
-                    echo "Contenu de back-end:"
-                    ls -la back-end/ || echo "back-end non trouvé"
+                    echo "=== Recherche des dossiers frontend/backend ==="
+                    find . -type d -name "*front*" -o -name "*back*" -o -name "*server*" -o -name "*client*" | head -10
                     echo ""
-                    echo "Contenu de front-end:"
-                    ls -la front-end/ || echo "front-end non trouvé"
+                    echo "=== Fichiers package.json trouvés ==="
+                    find . -name "package.json" -exec dirname {} \\; | head -10
                 '''
             }
         }
         
-        stage('Dependency Installation') {
+        stage('Détection Automatique des Dossiers') {
+            steps {
+                script {
+                    // Détection automatique des dossiers frontend/backend
+                    def frontendDir = sh(
+                        script: '''
+                            find . -name "package.json" -exec dirname {} \\; | grep -iE "(front|client)" | head -1 || \
+                            find . -maxdepth 2 -name "package.json" -exec dirname {} \\; | head -1
+                        ''',
+                        returnStdout: true
+                    ).trim()
+                    
+                    def backendDir = sh(
+                        script: '''
+                            find . -name "package.json" -exec dirname {} \\; | grep -iE "(back|server|api)" | head -1 || \
+                            find . -maxdepth 2 -name "package.json" -exec dirname {} \\; | tail -1
+                        ''',
+                        returnStdout: true
+                    ).trim()
+                    
+                    // Si un seul dossier trouvé, on utilise le même pour les deux
+                    if (!backendDir && frontendDir) {
+                        backendDir = frontendDir
+                    }
+                    if (!frontendDir && backendDir) {
+                        frontendDir = backendDir
+                    }
+                    
+                    // Si aucun dossier trouvé, utiliser la racine
+                    if (!frontendDir && !backendDir) {
+                        frontendDir = "."
+                        backendDir = "."
+                    }
+                    
+                    // Définition des variables d'environnement
+                    env.FRONTEND_DIR = frontendDir
+                    env.BACKEND_DIR = backendDir
+                    
+                    echo "📁 Dossiers détectés:"
+                    echo "Frontend: ${env.FRONTEND_DIR}"
+                    echo "Backend: ${env.BACKEND_DIR}"
+                }
+            }
+        }
+        
+        stage('Vérification des Dossiers') {
+            steps {
+                sh '''
+                    echo "✅ Vérification des dossiers détectés..."
+                    echo "=== Contenu Frontend (${FRONTEND_DIR}) ==="
+                    ls -la "${FRONTEND_DIR}" 2>/dev/null || echo "Dossier frontend non accessible"
+                    echo ""
+                    echo "=== Contenu Backend (${BACKEND_DIR}) ==="
+                    ls -la "${BACKEND_DIR}" 2>/dev/null || echo "Dossier backend non accessible"
+                    echo ""
+                    echo "=== Fichiers package.json ==="
+                    find "${FRONTEND_DIR}" -name "package.json" 2>/dev/null | head -5
+                    find "${BACKEND_DIR}" -name "package.json" 2>/dev/null | head -5
+                    echo ""
+                    echo "=== Vérification existence package.json ==="
+                    test -f "${FRONTEND_DIR}/package.json" && echo "✅ package.json trouvé dans frontend" || echo "❌ package.json NON trouvé dans frontend"
+                    test -f "${BACKEND_DIR}/package.json" && echo "✅ package.json trouvé dans backend" || echo "❌ package.json NON trouvé dans backend"
+                '''
+            }
+        }
+        
+        stage('Installation Dépendances') {
             parallel {
-                stage('Install Frontend Dependencies') {
+                stage('Install Frontend') {
                     steps {
-                        dir('front-end') {
-                            sh '''
-                                echo "📦 Installation des dépendances Frontend..."
-                                npm install
-                                echo "✅ Dépendances frontend installées"
-                            '''
+                        script {
+                            dir(env.FRONTEND_DIR) {
+                                sh '''
+                                    echo "📦 Installation dépendances Frontend dans $(pwd)"
+                                    if [ -f "package.json" ]; then
+                                        echo "📄 package.json trouvé, installation..."
+                                        npm install
+                                        if [ $? -eq 0 ]; then
+                                            echo "✅ Dépendances frontend installées avec succès"
+                                        else
+                                            echo "❌ Erreur lors de l'installation frontend"
+                                            exit 1
+                                        fi
+                                    else
+                                        echo "❌ package.json non trouvé dans $(pwd)"
+                                        echo "Contenu du dossier:"
+                                        ls -la
+                                        exit 1
+                                    fi
+                                '''
+                            }
                         }
                     }
                 }
-                stage('Install Backend Dependencies') {
+                stage('Install Backend') {
                     steps {
-                        dir('back-end') {
-                            sh '''
-                                echo "📦 Installation des dépendances Backend..."
-                                npm install
-                                echo "✅ Dépendances backend installées"
-                            '''
+                        script {
+                            // Si c'est le même dossier, on saute l'installation double
+                            if (env.BACKEND_DIR == env.FRONTEND_DIR) {
+                                echo "⚠️ Même dossier pour frontend et backend - installation déjà faite"
+                            } else {
+                                dir(env.BACKEND_DIR) {
+                                    sh '''
+                                        echo "📦 Installation dépendances Backend dans $(pwd)"
+                                        if [ -f "package.json" ]; then
+                                            echo "📄 package.json trouvé, installation..."
+                                            npm install
+                                            if [ $? -eq 0 ]; then
+                                                echo "✅ Dépendances backend installées avec succès"
+                                            else
+                                                echo "❌ Erreur lors de l'installation backend"
+                                                exit 1
+                                            fi
+                                        else
+                                            echo "❌ package.json non trouvé dans $(pwd)"
+                                            echo "Contenu du dossier:"
+                                            ls -la
+                                            exit 1
+                                        fi
+                                    '''
+                                }
+                            }
                         }
                     }
                 }
             }
         }
         
-        stage('SonarQube Analysis') {
+        stage('Analyse SonarQube') {
             parallel {
-                stage('Backend Analysis') {
+                stage('Analyse Backend') {
                     steps {
                         script {
                             withSonarQubeEnv('SonarQube') {
-                                dir('back-end') {
+                                dir(env.BACKEND_DIR) {
                                     sh """
-                                        echo "🔍 Analyse SonarQube Backend..."
+                                        echo "🔍 Analyse SonarQube Backend dans $(pwd)"
                                         ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
                                         -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
                                         -Dsonar.projectName='Express Backend' \
@@ -98,22 +195,27 @@ pipeline {
                         }
                     }
                 }
-                stage('Frontend Analysis') {
+                stage('Analyse Frontend') {
                     steps {
                         script {
-                            withSonarQubeEnv('SonarQube') {
-                                dir('front-end') {
-                                    sh """
-                                        echo "🔍 Analyse SonarQube Frontend..."
-                                        ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
-                                        -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
-                                        -Dsonar.projectName='React Frontend' \
-                                        -Dsonar.projectVersion=${BUILD_NUMBER} \
-                                        -Dsonar.sources=. \
-                                        -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
-                                        -Dsonar.sourceEncoding=UTF-8 \
-                                        -Dsonar.host.url=${SONAR_HOST_URL}
-                                    """
+                            // Si c'est le même dossier, on fait une seule analyse
+                            if (env.FRONTEND_DIR == env.BACKEND_DIR) {
+                                echo "⚠️ Même dossier - analyse SonarQube déjà faite"
+                            } else {
+                                withSonarQubeEnv('SonarQube') {
+                                    dir(env.FRONTEND_DIR) {
+                                        sh """
+                                            echo "🔍 Analyse SonarQube Frontend dans $(pwd)"
+                                            ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
+                                            -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
+                                            -Dsonar.projectName='React Frontend' \
+                                            -Dsonar.projectVersion=${BUILD_NUMBER} \
+                                            -Dsonar.sources=. \
+                                            -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
+                                            -Dsonar.sourceEncoding=UTF-8 \
+                                            -Dsonar.host.url=${SONAR_HOST_URL}
+                                        """
+                                    }
                                 }
                             }
                         }
@@ -128,7 +230,11 @@ pipeline {
                     echo "⏳ Attente des résultats SonarQube..."
                     sleep 30
                     
-                    def projects = ["${SONAR_PROJECT_KEY}-backend", "${SONAR_PROJECT_KEY}-frontend"]
+                    def projects = ["${SONAR_PROJECT_KEY}-backend"]
+                    if (env.FRONTEND_DIR != env.BACKEND_DIR) {
+                        projects.add("${SONAR_PROJECT_KEY}-frontend")
+                    }
+                    
                     def qualityGateResults = [:]
                     def allPassed = true
                     
@@ -150,7 +256,6 @@ pipeline {
                         currentBuild.result = 'UNSTABLE'
                     }
                     
-                    // Stocker les résultats pour l'email
                     env.SONAR_RESULTS = qualityGateResults.toString()
                 }
             }
@@ -158,13 +263,22 @@ pipeline {
         
         stage('Security Scan') {
             steps {
-                sh '''
-                    echo "🔒 Analyse de sécurité des dépendances..."
-                    echo "=== Backend ==="
-                    cd back-end && npm audit --audit-level moderate --production || true
-                    echo "=== Frontend ==="
-                    cd ../front-end && npm audit --audit-level moderate --production || true
-                '''
+                script {
+                    dir(env.FRONTEND_DIR) {
+                        sh '''
+                            echo "🔒 Analyse sécurité Frontend..."
+                            npm audit --audit-level moderate --production || true
+                        '''
+                    }
+                    if (env.BACKEND_DIR != env.FRONTEND_DIR) {
+                        dir(env.BACKEND_DIR) {
+                            sh '''
+                                echo "🔒 Analyse sécurité Backend..."
+                                npm audit --audit-level moderate --production || true
+                            '''
+                        }
+                    }
+                }
             }
         }
         
@@ -205,6 +319,7 @@ pipeline {
                         docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}
                         docker push ${BACKEND_IMAGE}:latest
 
+                        echo "🔓 Déconnexion de Docker Hub..."
                         docker logout
                     '''
                 }
@@ -247,6 +362,7 @@ pipeline {
                     echo "🔗 URLs de l'application:"
                     echo "Frontend: http://localhost:5173"
                     echo "Backend: http://localhost:5001/api"
+                    echo "MongoDB: localhost:27017"
                 '''
             }
         }
@@ -275,6 +391,9 @@ pipeline {
                     sonarStatus = "Analyses effectuées"
                 }
                 
+                // Structure détectée
+                def structureInfo = "Frontend: ${env.FRONTEND_DIR}, Backend: ${env.BACKEND_DIR}"
+                
                 // Préparer le sujet et le corps de l'email selon le résultat
                 def emailSubject = ""
                 def emailBody = ""
@@ -297,13 +416,14 @@ pipeline {
                                 <li><strong>URL Jenkins:</strong> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></li>
                                 <li><strong>Durée:</strong> ${buildDuration}</li>
                                 <li><strong>Date:</strong> ${new Date().format("dd/MM/yyyy à HH:mm")}</li>
+                                <li><strong>Structure détectée:</strong> ${structureInfo}</li>
                                 <li><strong>Statut SonarQube:</strong> ${sonarStatus}</li>
                             </ul>
                             
                             <h3 style="color: #0056b3;">📈 Qualité du code:</h3>
                             <ul>
                                 <li><strong>Rapport Backend SonarQube:</strong> <a href="${sonarBackendUrl}">Voir le rapport</a></li>
-                                <li><strong>Rapport Frontend SonarQube:</strong> <a href="${sonarFrontendUrl}">Voir le rapport</a></li>
+                                ${env.FRONTEND_DIR != env.BACKEND_DIR ? '<li><strong>Rapport Frontend SonarQube:</strong> <a href="' + sonarFrontendUrl + '">Voir le rapport</a></li>' : ''}
                                 <li><strong>Analyse de sécurité:</strong> Effectuée</li>
                             </ul>
                             
@@ -352,6 +472,7 @@ pipeline {
                                 <li><strong>URL Jenkins:</strong> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></li>
                                 <li><strong>Durée:</strong> ${buildDuration}</li>
                                 <li><strong>Date:</strong> ${new Date().format("dd/MM/yyyy à HH:mm")}</li>
+                                <li><strong>Structure détectée:</strong> ${structureInfo}</li>
                             </ul>
                             
                             <h3 style="color: #0056b3;">🔍 Logs d'erreur:</h3>
@@ -386,13 +507,14 @@ pipeline {
                                 <li><strong>URL Jenkins:</strong> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></li>
                                 <li><strong>Durée:</strong> ${buildDuration}</li>
                                 <li><strong>Date:</strong> ${new Date().format("dd/MM/yyyy à HH:mm")}</li>
+                                <li><strong>Structure détectée:</strong> ${structureInfo}</li>
                                 <li><strong>Statut:</strong> Quality Gate SonarQube échouée</li>
                             </ul>
                             
                             <h3 style="color: #0056b3;">📈 Qualité du code:</h3>
                             <ul>
                                 <li><strong>Rapport Backend SonarQube:</strong> <a href="${sonarBackendUrl}">Voir le rapport</a></li>
-                                <li><strong>Rapport Frontend SonarQube:</strong> <a href="${sonarFrontendUrl}">Voir le rapport</a></li>
+                                ${env.FRONTEND_DIR != env.BACKEND_DIR ? '<li><strong>Rapport Frontend SonarQube:</strong> <a href="' + sonarFrontendUrl + '">Voir le rapport</a></li>' : ''}
                                 <li><strong>Détails SonarQube:</strong> ${sonarStatus}</li>
                             </ul>
                             
@@ -428,6 +550,18 @@ pipeline {
                     )
                 }
             }
+        }
+        
+        success {
+            echo '✅ Pipeline terminé avec succès!'
+        }
+        
+        failure {
+            echo '❌ Pipeline a échoué!'
+        }
+        
+        unstable {
+            echo '⚠️  Pipeline terminé avec statut instable!'
         }
     }
 }
