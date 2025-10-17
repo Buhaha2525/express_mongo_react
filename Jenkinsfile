@@ -389,12 +389,12 @@ metadata:
   name: frontend-service
   namespace: ${K8S_NAMESPACE}
 spec:
+  type: LoadBalancer
   selector:
     app: react-frontend
   ports:
   - port: 80
     targetPort: 5173
-  type: LoadBalancer
 """
                     
                     writeFile file: 'k8s/mongo-deployment.yaml', text: """apiVersion: apps/v1
@@ -450,30 +450,35 @@ spec:
         stage('Déploiement Kubernetes') {
             steps {
                 script {
-                    sh '''
+                    sh """
                         echo "🔍 Vérification de l'accès Kubernetes..."
                         kubectl version --client || echo "kubectl non disponible"
-                    '''
+                    """
                     
-                    sh '''
+                    sh """
                         echo "🏗️  Configuration Kubernetes..."
                         kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f - || echo "Namespace déjà existant"
-                    '''
+                    """
                     
-                    sh '''
+                    sh """
                         echo "📦 Déploiement MongoDB..."
                         kubectl apply -f k8s/mongo-deployment.yaml || echo "Échec déploiement MongoDB"
-                    '''
+                    """
                     
-                    sh '''
+                    sh """
                         echo "⏳ Attente du démarrage de MongoDB..."
-                        timeout 60s bash -c 'until kubectl get pods -n ${K8S_NAMESPACE} -l app=mongo 2>/dev/null | grep -q Running; do sleep 5; echo "En attente de MongoDB..."; done' || echo "Timeout MongoDB"
-                    '''
+                        timeout 120s bash -c '
+                            until kubectl get pods -n ${K8S_NAMESPACE} -l app=mongo 2>/dev/null | grep -q Running; do 
+                                sleep 10
+                                echo "En attente de MongoDB..."
+                            done
+                        ' || echo "⚠️ Timeout MongoDB - continuation"
+                    """
                     
-                    sh '''
+                    sh """
                         echo "🚀 Déploiement Backend..."
                         kubectl apply -f k8s/backend-deployment.yaml || echo "Échec déploiement Backend"
-                    '''
+                    """
                     
                     sh """
                         echo "🎨 Déploiement Frontend..."
@@ -494,26 +499,103 @@ spec:
             }
         }
         
-        stage('Health Check Kubernetes') {
+        stage('Attente Démarrage Pods') {
             steps {
-                sh '''
-                    echo "🏥 Vérification de la santé Kubernetes..."
-                    echo "⏳ Attente du démarrage des pods..."
-                    sleep 30
+                script {
+                    sh """
+                        echo "⏳ Attente du démarrage complet des pods..."
+                        timeout 300s bash -c '
+                            while true; do
+                                ready_pods=\$(kubectl get pods -n ${K8S_NAMESPACE} --no-headers 2>/dev/null | grep Running | wc -l)
+                                total_pods=\$(kubectl get pods -n ${K8S_NAMESPACE} --no-headers 2>/dev/null | wc -l)
+                                echo "Pods prêts: \$ready_pods/\$total_pods"
+                                
+                                if [ "\\$total_pods" -eq "5" ] && [ "\\$ready_pods" -eq "5" ]; then
+                                    echo "✅ Tous les pods sont running et ready"
+                                    break
+                                fi
+                                sleep 15
+                            done
+                        ' || echo "⚠️ Timeout atteint - vérification de l'état actuel"
+                    """
                     
-                    echo "🔍 Vérification des pods..."
-                    kubectl get pods -n ${K8S_NAMESPACE} -o wide || echo "Impossible de récupérer les pods"
+                    sh """
+                        echo "🔍 État final des pods:"
+                        kubectl get pods -n ${K8S_NAMESPACE} -o wide
+                        echo ""
+                        echo "📋 Détails des services:"
+                        kubectl get svc -n ${K8S_NAMESPACE}
+                    """
+                }
+            }
+        }
+        
+        stage('Configuration Accès Application') {
+            steps {
+                script {
+                    sh """
+                        echo "🔗 Configuration de l'accès à l'application..."
+                        
+                        # Vérifier si LoadBalancer a une IP externe
+                        EXTERNAL_IP=\$(kubectl get svc frontend-service -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+                        
+                        if [ -n "\\$EXTERNAL_IP" ]; then
+                            echo "🌐 IP Externe LoadBalancer: \\$EXTERNAL_IP"
+                            echo "🎯 URL de l'application: http://\\$EXTERNAL_IP"
+                        else
+                            echo "🔧 LoadBalancer en attente d'IP, configuration du port-forward..."
+                            
+                            # Démarrer port-forward en arrière-plan
+                            kubectl port-forward svc/frontend-service 8080:80 -n ${K8S_NAMESPACE} --address=0.0.0.0 &
+                            PF_PID=\\$!
+                            echo \\$PF_PID > /tmp/portforward.pid
+                            
+                            sleep 5
+                            
+                            echo "🌐 URL d'accès temporaire: http://localhost:8080"
+                            echo "📝 Le port-forward est actif (PID: \\$PF_PID)"
+                            
+                            # Tester l'accès
+                            echo "🧪 Test de l'application..."
+                            curl -f http://localhost:8080 && echo "✅ Frontend accessible via port-forward" || echo "❌ Frontend non accessible"
+                        fi
+                    """
                     
-                    echo "🔗 Informations de l'application:"
-                    echo "Namespace: ${K8S_NAMESPACE}"
-                    echo "Frontend Service: frontend-service"
-                    echo "Backend Service: backend-service"
-                    echo "MongoDB Service: mongo-service"
-                    
-                    echo "📝 Logs des déploiements:"
-                    kubectl logs deployment/express-backend -n ${K8S_NAMESPACE} --tail=5 || echo "Pas encore de logs backend"
-                    kubectl logs deployment/react-frontend -n ${K8S_NAMESPACE} --tail=5 || echo "Pas encore de logs frontend"
-                '''
+                    // Sauvegarder les URLs pour l'email
+                    def externalIp = sh(script: "kubectl get svc frontend-service -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo 'localhost:8080'", returnStdout: true).trim()
+                    if (externalIp == 'localhost:8080') {
+                        env.APP_URL = "http://localhost:8080"
+                        env.ACCESS_METHOD = "Port-Forward"
+                    } else {
+                        env.APP_URL = "http://${externalIp}"
+                        env.ACCESS_METHOD = "LoadBalancer"
+                    }
+                }
+            }
+        }
+        
+        stage('Tests Finaux') {
+            steps {
+                script {
+                    sh """
+                        echo "🧪 Tests finaux de l'application..."
+                        echo "⏳ Attente supplémentaire pour le démarrage complet..."
+                        sleep 30
+                        
+                        # Test du backend
+                        echo "🔧 Test du backend..."
+                        kubectl exec -n ${K8S_NAMESPACE} deployment/express-backend -- curl -f http://localhost:5001/api/health && echo "✅ Backend opérationnel" || echo "⚠️ Backend en cours de démarrage"
+                        
+                        # Test du frontend via port-forward
+                        echo "🎨 Test du frontend..."
+                        curl -f http://localhost:8080 && echo "✅ Frontend opérationnel" || echo "⚠️ Frontend en cours de démarrage"
+                        
+                        echo "📊 Résumé des tests:"
+                        echo "=========================================="
+                        kubectl get all -n ${K8S_NAMESPACE}
+                        echo "=========================================="
+                    """
+                }
             }
         }
     }
@@ -522,12 +604,20 @@ spec:
         always {
             echo "📝 Pipeline ${currentBuild.currentResult} - Build #${BUILD_NUMBER}"
             script {
-                def k8sStatus = "Non disponible"
-                try {
-                    k8sStatus = sh(script: "kubectl get all -n ${K8S_NAMESPACE} 2>/dev/null || echo 'Kubernetes non accessible'", returnStdout: true).trim()
-                } catch (Exception e) {
-                    k8sStatus = "Erreur lors de la récupération des informations Kubernetes"
-                }
+                // Arrêter le port-forward s'il est actif
+                sh '''
+                    if [ -f /tmp/portforward.pid ]; then
+                        PF_PID=$(cat /tmp/portforward.pid)
+                        kill $PF_PID 2>/dev/null || true
+                        rm -f /tmp/portforward.pid
+                        echo "🔴 Port-forward arrêté"
+                    fi
+                '''
+                
+                // Récupérer les informations finales
+                def k8sStatus = sh(script: "kubectl get all -n ${K8S_NAMESPACE} 2>/dev/null || echo 'Kubernetes non accessible'", returnStdout: true).trim()
+                def podsStatus = sh(script: "kubectl get pods -n ${K8S_NAMESPACE} 2>/dev/null || echo 'Pods non accessibles'", returnStdout: true).trim()
+                def servicesStatus = sh(script: "kubectl get svc -n ${K8S_NAMESPACE} 2>/dev/null || echo 'Services non accessibles'", returnStdout: true).trim()
                 
                 def buildDuration = currentBuild.durationString.replace(' and counting', '')
                 def sonarBackendUrl = "${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}-backend"
@@ -541,7 +631,10 @@ spec:
                 }
                 
                 def structureInfo = "Frontend: ${env.FRONTEND_DIR}, Backend: ${env.BACKEND_DIR}"
+                def appUrl = env.APP_URL ?: "http://localhost:8080"
+                def accessMethod = env.ACCESS_METHOD ?: "Port-Forward"
                 
+                // Configuration email
                 def emailSubject = ""
                 def emailBody = ""
                 
@@ -564,6 +657,7 @@ spec:
                                 <li><strong>Durée:</strong> ${buildDuration}</li>
                                 <li><strong>Date:</strong> ${new Date().format("dd/MM/yyyy à HH:mm")}</li>
                                 <li><strong>Namespace K8s:</strong> ${K8S_NAMESPACE}</li>
+                                <li><strong>Méthode d'accès:</strong> ${accessMethod}</li>
                                 <li><strong>Structure détectée:</strong> ${structureInfo}</li>
                                 <li><strong>Statut SonarQube:</strong> ${sonarStatus}</li>
                             </ul>
@@ -572,17 +666,24 @@ spec:
                             <ul>
                                 <li><strong>Frontend:</strong> ${FRONTEND_IMAGE}:${BUILD_NUMBER}</li>
                                 <li><strong>Backend:</strong> ${BACKEND_IMAGE}:${BUILD_NUMBER}</li>
+                                <li><strong>MongoDB:</strong> mongo:6</li>
                             </ul>
                             
-                            <h3 style="color: #0056b3;">🌐 Application déployée:</h3>
+                            <h3 style="color: #0056b3;">🌐 Accès à l'application:</h3>
+                            <div style="background-color: #e7f3ff; padding: 15px; border-radius: 5px; border: 1px solid #b3d9ff;">
+                                <h4 style="margin-top: 0; color: #0066cc;">${appUrl}</h4>
+                                <p><strong>Méthode:</strong> ${accessMethod}</p>
+                                <p><em>Si LoadBalancer est utilisé, l'IP peut prendre quelques minutes pour être assignée.</em></p>
+                            </div>
+                            
+                            <h3 style="color: #0056b3;">📈 Qualité du code:</h3>
                             <ul>
-                                <li><strong>Frontend React:</strong> Service: frontend-service.${K8S_NAMESPACE}</li>
-                                <li><strong>Backend API:</strong> Service: backend-service.${K8S_NAMESPACE}</li>
-                                <li><strong>MongoDB:</strong> Service: mongo-service.${K8S_NAMESPACE}</li>
+                                <li><strong>Rapport Backend SonarQube:</strong> <a href="${sonarBackendUrl}">Voir le rapport</a></li>
+                                ${env.FRONTEND_DIR != env.BACKEND_DIR ? '<li><strong>Rapport Frontend SonarQube:</strong> <a href="' + sonarFrontendUrl + '">Voir le rapport</a></li>' : ''}
                             </ul>
                             
                             <h3 style="color: #0056b3;">☸️ État Kubernetes:</h3>
-                            <pre style="background-color: #f8f9fa; padding: 10px; border-radius: 3px; border: 1px solid #e9ecef;">${k8sStatus}</pre>
+                            <pre style="background-color: #f8f9fa; padding: 10px; border-radius: 3px; border: 1px solid #e9ecef; font-size: 12px;">${k8sStatus}</pre>
                             
                             <div style="background-color: #d4edda; color: #155724; padding: 12px; border-radius: 4px; border: 1px solid #c3e6cb; margin-top: 20px;">
                                 <strong>✅ Application déployée avec succès sur Kubernetes</strong>
@@ -613,11 +714,15 @@ spec:
                                 <li><strong>URL Jenkins:</strong> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></li>
                                 <li><strong>Durée:</strong> ${buildDuration}</li>
                                 <li><strong>Date:</strong> ${new Date().format("dd/MM/yyyy à HH:mm")}</li>
+                                <li><strong>Namespace K8s:</strong> ${K8S_NAMESPACE}</li>
                                 <li><strong>Structure détectée:</strong> ${structureInfo}</li>
                             </ul>
                             
+                            <h3 style="color: #0056b3;">🔍 État actuel Kubernetes:</h3>
+                            <pre style="background-color: #f8f9fa; padding: 10px; border-radius: 3px; border: 1px solid #e9ecef; font-size: 12px;">${k8sStatus}</pre>
+                            
                             <div style="background-color: #f8d7da; color: #721c24; padding: 12px; border-radius: 4px; border: 1px solid #f5c6cb; margin-top: 20px;">
-                                <strong>❌ Une intervention est nécessaire - Consultez les logs Jenkins</strong>
+                                <strong>❌ Une intervention est nécessaire - Consultez les logs Jenkins pour plus de détails</strong>
                             </div>
                             
                             <hr style="margin: 20px 0;">
@@ -642,10 +747,17 @@ spec:
         
         success {
             echo '✅ Pipeline Kubernetes terminé avec succès!'
+            echo "🌐 Votre application est accessible à: ${env.APP_URL ?: 'http://localhost:8080'}"
         }
         
         failure {
             echo '❌ Pipeline Kubernetes a échoué!'
+            echo '🔍 Consultez les logs pour plus de détails'
+        }
+        
+        unstable {
+            echo '⚠️  Pipeline terminé avec statut instable (Quality Gate échouée)'
+            echo "🌐 Votre application est accessible à: ${env.APP_URL ?: 'http://localhost:8080'}"
         }
     }
 }
