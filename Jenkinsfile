@@ -533,7 +533,7 @@ spec:
         stage('Configuration Accès Application') {
             steps {
                 script {
-                    sh """
+                    sh '''
                         echo "🔗 Configuration de l'accès à l'application..."
                         
                         # Vérifier si LoadBalancer a une IP externe
@@ -559,7 +559,7 @@ spec:
                             echo "🧪 Test de l'application..."
                             curl -f http://localhost:8080 && echo "✅ Frontend accessible via port-forward" || echo "❌ Frontend non accessible"
                         fi
-                    """
+                    '''
                     
                     // Sauvegarder les URLs pour l'email
                     def externalIp = sh(script: "kubectl get svc frontend-service -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo 'localhost:8080'", returnStdout: true).trim()
@@ -577,7 +577,7 @@ spec:
         stage('Tests Finaux') {
             steps {
                 script {
-                    sh """
+                    sh '''
                         echo "🧪 Tests finaux de l'application..."
                         echo "⏳ Attente supplémentaire pour le démarrage complet..."
                         sleep 30
@@ -594,7 +594,7 @@ spec:
                         echo "=========================================="
                         kubectl get all -n ${K8S_NAMESPACE}
                         echo "=========================================="
-                    """
+                    '''
                 }
             }
         }
