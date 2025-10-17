@@ -256,28 +256,28 @@ pipeline {
             }
         }
         
-        stage('Push Docker Images') {
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: "${DOCKER_CREDENTIALS_ID}", 
-                    usernameVariable: 'DOCKER_USERNAME', 
-                    passwordVariable: 'DOCKER_PASSWORD'
-                )]) {
-                    sh '''
-                        echo "🔐 Vérification connexion Docker Hub..."
-                        echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+        //stage('Push Docker Images') {
+          //  steps {
+            //    withCredentials([usernamePassword(
+              //      credentialsId: "${DOCKER_CREDENTIALS_ID}", 
+                //    usernameVariable: 'DOCKER_USERNAME', 
+                  //  passwordVariable: 'DOCKER_PASSWORD'
+               // )]) {
+                    //sh '''
+                      //  echo "🔐 Vérification connexion Docker Hub..."
+                      //  echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
 
-                        echo "📤 Poussage des images..."
-                        docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}
-                        docker push ${FRONTEND_IMAGE}:latest
-                        docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}
-                        docker push ${BACKEND_IMAGE}:latest
+                       // echo "📤 Poussage des images..."
+                      //  docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}
+                     //   docker push ${FRONTEND_IMAGE}:latest
+                   //     docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}
+                 //       docker push ${BACKEND_IMAGE}:latest
 
-                        docker logout
-                    '''
-                }
-            }
-        }
+               //         docker logout
+             //       '''
+           //     }
+         //   }
+       // }
         
         stage('Préparation Manifests Kubernetes') {
             steps {
