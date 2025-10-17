@@ -132,7 +132,7 @@ pipeline {
                         script {
                             withSonarQubeEnv('SonarQube') {
                                 dir(env.BACKEND_DIR) {
-                                    sh """
+                                    sh '''
                                         echo "🔍 Analyse SonarQube Backend dans $(pwd)"
                                         ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
                                         -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
@@ -142,7 +142,7 @@ pipeline {
                                         -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
                                         -Dsonar.sourceEncoding=UTF-8 \
                                         -Dsonar.host.url=${SONAR_HOST_URL}
-                                    """
+                                    '''
                                 }
                             }
                         }
@@ -154,7 +154,7 @@ pipeline {
                             if (env.FRONTEND_DIR != env.BACKEND_DIR) {
                                 withSonarQubeEnv('SonarQube') {
                                     dir(env.FRONTEND_DIR) {
-                                        sh """
+                                        sh '''
                                             echo "🔍 Analyse SonarQube Frontend dans $(pwd)"
                                             ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
                                             -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
@@ -164,7 +164,7 @@ pipeline {
                                             -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
                                             -Dsonar.sourceEncoding=UTF-8 \
                                             -Dsonar.host.url=${SONAR_HOST_URL}
-                                        """
+                                        '''
                                     }
                                 }
                             }
@@ -480,7 +480,7 @@ spec:
             steps {
                 script {
                     // Version simplifiée et corrigée de l'attente des pods
-                    sh """
+                    sh '''
                         echo "⏳ Attente du démarrage complet des pods..."
                         timeout 300s bash -c '
                             for i in {1..60}; do
@@ -504,15 +504,15 @@ spec:
                                 sleep 5
                             done
                         '
-                    """
+                    '''
                     
-                    sh """
+                    sh '''
                         echo "🔍 État final des pods:"
                         kubectl get pods -n ${K8S_NAMESPACE} -o wide
                         echo ""
                         echo "📋 Détails des services:"
                         kubectl get svc -n ${K8S_NAMESPACE}
-                    """
+                    '''
                 }
             }
         }
@@ -521,7 +521,7 @@ spec:
             steps {
                 script {
                     // Version corrigée sans problèmes d'échappement
-                    sh """
+                    sh '''
                         echo "🔗 Configuration de l'accès à l'application..."
                         
                         # Vérifier si LoadBalancer a une IP externe
@@ -549,7 +549,7 @@ spec:
                             echo "🧪 Test de l'application..."
                             curl -f http://localhost:8080 && echo "✅ Frontend accessible via port-forward" || echo "❌ Frontend non accessible"
                         fi
-                    """
+                    '''
                     
                     // Lire l'URL depuis le fichier
                     def appUrl = sh(script: "cat external_ip.txt", returnStdout: true).trim()
