@@ -132,7 +132,7 @@ pipeline {
                         script {
                             withSonarQubeEnv('SonarQube') {
                                 dir(env.BACKEND_DIR) {
-                                    sh """
+                                    sh '''
                                         echo "🔍 Analyse SonarQube Backend dans $(pwd)"
                                         ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
                                         -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
@@ -142,7 +142,7 @@ pipeline {
                                         -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
                                         -Dsonar.sourceEncoding=UTF-8 \
                                         -Dsonar.host.url=${SONAR_HOST_URL}
-                                    """
+                                    '''
                                 }
                             }
                         }
@@ -154,7 +154,7 @@ pipeline {
                             if (env.FRONTEND_DIR != env.BACKEND_DIR) {
                                 withSonarQubeEnv('SonarQube') {
                                     dir(env.FRONTEND_DIR) {
-                                        sh """
+                                        sh '''
                                             echo "🔍 Analyse SonarQube Frontend dans $(pwd)"
                                             ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
                                             -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
@@ -164,7 +164,7 @@ pipeline {
                                             -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
                                             -Dsonar.sourceEncoding=UTF-8 \
                                             -Dsonar.host.url=${SONAR_HOST_URL}
-                                        """
+                                        '''
                                     }
                                 }
                             }
@@ -450,30 +450,30 @@ spec:
         stage('Déploiement Kubernetes') {
             steps {
                 script {
-                    sh """
+                    sh '''
                         echo "🔍 Vérification de l'accès Kubernetes..."
                         kubectl version --client || echo "kubectl non disponible"
-                    """
+                    '''
                     
-                    sh """
+                    sh '''
                         echo "🏗️  Configuration Kubernetes..."
                         kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f - || echo "Namespace déjà existant"
-                    """
+                    '''
                     
-                    sh """
+                    sh '''
                         echo "📦 Déploiement MongoDB..."
                         kubectl apply -f k8s/mongo-deployment.yaml || echo "Échec déploiement MongoDB"
-                    """
+                    '''
                     
-                    sh """
+                    sh '''
                         echo "⏳ Attente du démarrage de MongoDB..."
                         timeout 60s bash -c 'until kubectl get pods -n ${K8S_NAMESPACE} -l app=mongo 2>/dev/null | grep -q Running; do sleep 5; echo "En attente de MongoDB..."; done' || echo "Timeout MongoDB"
-                    """
+                    '''
                     
-                    sh """
+                    sh '''
                         echo "🚀 Déploiement Backend..."
                         kubectl apply -f k8s/backend-deployment.yaml || echo "Échec déploiement Backend"
-                    """
+                    '''
                     
                     sh """
                         echo "🎨 Déploiement Frontend..."
@@ -496,7 +496,7 @@ spec:
         
         stage('Health Check Kubernetes') {
             steps {
-                sh """
+                sh '''
                     echo "🏥 Vérification de la santé Kubernetes..."
                     echo "⏳ Attente du démarrage des pods..."
                     sleep 30
@@ -513,7 +513,7 @@ spec:
                     echo "📝 Logs des déploiements:"
                     kubectl logs deployment/express-backend -n ${K8S_NAMESPACE} --tail=5 || echo "Pas encore de logs backend"
                     kubectl logs deployment/react-frontend -n ${K8S_NAMESPACE} --tail=5 || echo "Pas encore de logs frontend"
-                """
+                '''
             }
         }
     }
