@@ -50,7 +50,7 @@ pipeline {
                     // Détection automatique des dossiers frontend/backend
                     def frontendDir = sh(
                         script: '''
-                            find . -name "package.json" -exec dirname {} \\; | grep -iE "(front|client)" | head -1 || \
+                            find . -name "package.json" -exec dirname {} \\; | grep -iE "(front|client)" | head -1 || 
                             find . -maxdepth 2 -name "package.json" -exec dirname {} \\; | head -1
                         ''',
                         returnStdout: true
@@ -58,7 +58,7 @@ pipeline {
                     
                     def backendDir = sh(
                         script: '''
-                            find . -name "package.json" -exec dirname {} \\; | grep -iE "(back|server|api)" | head -1 || \
+                            find . -name "package.json" -exec dirname {} \\; | grep -iE "(back|server|api)" | head -1 || 
                             find . -maxdepth 2 -name "package.json" -exec dirname {} \\; | tail -1
                         ''',
                         returnStdout: true
@@ -352,12 +352,12 @@ pipeline {
                     fi
                     
                     echo "🔍 Tests de connectivité..."
-                    timeout 30s bash -c '
+                    timeout 30s bash -c "
                         until curl -f http://localhost:5001/api/health 2>/dev/null; do
-                            echo "En attente du backend..."
+                            echo 'En attente du backend...'
                             sleep 5
                         done
-                    ' || echo "Backend health check timeout"
+                    " || echo "Backend health check timeout"
                     
                     echo "🔗 URLs de l'application:"
                     echo "Frontend: http://localhost:5173"
