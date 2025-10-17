@@ -204,7 +204,7 @@ pipeline {
                             } else {
                                 withSonarQubeEnv('SonarQube') {
                                     dir(env.FRONTEND_DIR) {
-                                        sh """
+                                        sh '''
                                             echo "🔍 Analyse SonarQube Frontend dans $(pwd)"
                                             ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
                                             -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
@@ -214,7 +214,7 @@ pipeline {
                                             -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
                                             -Dsonar.sourceEncoding=UTF-8 \
                                             -Dsonar.host.url=${SONAR_HOST_URL}
-                                        """
+                                        '''
                                     }
                                 }
                             }
