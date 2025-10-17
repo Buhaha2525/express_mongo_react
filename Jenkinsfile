@@ -132,7 +132,7 @@ pipeline {
                         script {
                             withSonarQubeEnv('SonarQube') {
                                 dir(env.BACKEND_DIR) {
-                                    sh '''
+                                    sh """
                                         echo "🔍 Analyse SonarQube Backend dans $(pwd)"
                                         ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
                                         -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
@@ -142,7 +142,7 @@ pipeline {
                                         -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
                                         -Dsonar.sourceEncoding=UTF-8 \
                                         -Dsonar.host.url=${SONAR_HOST_URL}
-                                    '''
+                                    """
                                 }
                             }
                         }
@@ -154,7 +154,7 @@ pipeline {
                             if (env.FRONTEND_DIR != env.BACKEND_DIR) {
                                 withSonarQubeEnv('SonarQube') {
                                     dir(env.FRONTEND_DIR) {
-                                        sh '''
+                                        sh """
                                             echo "🔍 Analyse SonarQube Frontend dans $(pwd)"
                                             ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
                                             -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
@@ -164,7 +164,7 @@ pipeline {
                                             -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
                                             -Dsonar.sourceEncoding=UTF-8 \
                                             -Dsonar.host.url=${SONAR_HOST_URL}
-                                        '''
+                                        """
                                     }
                                 }
                             }
@@ -255,29 +255,6 @@ pipeline {
                 }
             }
         }
-        
-        //stage('Push Docker Images') {
-          //  steps {
-            //    withCredentials([usernamePassword(
-              //      credentialsId: "${DOCKER_CREDENTIALS_ID}", 
-                //    usernameVariable: 'DOCKER_USERNAME', 
-                  //  passwordVariable: 'DOCKER_PASSWORD'
-               // )]) {
-                    //sh '''
-                      //  echo "🔐 Vérification connexion Docker Hub..."
-                      //  echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
-
-                       // echo "📤 Poussage des images..."
-                      //  docker push ${FRONTEND_IMAGE}:${BUILD_NUMBER}
-                     //   docker push ${FRONTEND_IMAGE}:latest
-                   //     docker push ${BACKEND_IMAGE}:${BUILD_NUMBER}
-                 //       docker push ${BACKEND_IMAGE}:latest
-
-               //         docker logout
-             //       '''
-           //     }
-         //   }
-       // }
         
         stage('Préparation Manifests Kubernetes') {
             steps {
@@ -502,21 +479,31 @@ spec:
         stage('Attente Démarrage Pods') {
             steps {
                 script {
+                    // Version simplifiée et corrigée de l'attente des pods
                     sh """
                         echo "⏳ Attente du démarrage complet des pods..."
                         timeout 300s bash -c '
-                            while true; do
-                                ready_pods=\$(kubectl get pods -n ${K8S_NAMESPACE} --no-headers 2>/dev/null | grep Running | wc -l)
-                                total_pods=\$(kubectl get pods -n ${K8S_NAMESPACE} --no-headers 2>/dev/null | wc -l)
-                                echo "Pods prêts: \$ready_pods/\$total_pods"
+                            for i in {1..60}; do
+                                ready_count=\$(kubectl get pods -n ${K8S_NAMESPACE} --no-headers 2>/dev/null | grep "Running" | wc -l | tr -d " ")
+                                total_count=\$(kubectl get pods -n ${K8S_NAMESPACE} --no-headers 2>/dev/null | wc -l | tr -d " ")
                                 
-                                if [ "\\$total_pods" -eq "5" ] && [ "\\$ready_pods" -eq "5" ]; then
+                                echo "Pods prêts: \$ready_count/\$total_count"
+                                
+                                if [ "\\$total_count" -eq "5" ] && [ "\\$ready_count" -eq "5" ]; then
                                     echo "✅ Tous les pods sont running et ready"
-                                    break
+                                    exit 0
                                 fi
-                                sleep 15
+                                
+                                if [ "\\$i" -eq "60" ]; then
+                                    echo "⚠️ Timeout atteint après 300 secondes"
+                                    echo "État actuel:"
+                                    kubectl get pods -n ${K8S_NAMESPACE}
+                                    exit 0
+                                fi
+                                
+                                sleep 5
                             done
-                        ' || echo "⚠️ Timeout atteint - vérification de l'état actuel"
+                        '
                     """
                     
                     sh """
@@ -533,7 +520,8 @@ spec:
         stage('Configuration Accès Application') {
             steps {
                 script {
-                    sh '''
+                    // Version corrigée sans problèmes d'échappement
+                    sh """
                         echo "🔗 Configuration de l'accès à l'application..."
                         
                         # Vérifier si LoadBalancer a une IP externe
@@ -542,6 +530,7 @@ spec:
                         if [ -n "\\$EXTERNAL_IP" ]; then
                             echo "🌐 IP Externe LoadBalancer: \\$EXTERNAL_IP"
                             echo "🎯 URL de l'application: http://\\$EXTERNAL_IP"
+                            echo "\\$EXTERNAL_IP" > external_ip.txt
                         else
                             echo "🔧 LoadBalancer en attente d'IP, configuration du port-forward..."
                             
@@ -554,22 +543,25 @@ spec:
                             
                             echo "🌐 URL d'accès temporaire: http://localhost:8080"
                             echo "📝 Le port-forward est actif (PID: \\$PF_PID)"
+                            echo "localhost:8080" > external_ip.txt
                             
                             # Tester l'accès
                             echo "🧪 Test de l'application..."
                             curl -f http://localhost:8080 && echo "✅ Frontend accessible via port-forward" || echo "❌ Frontend non accessible"
                         fi
-                    '''
+                    """
                     
-                    // Sauvegarder les URLs pour l'email
-                    def externalIp = sh(script: "kubectl get svc frontend-service -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null || echo 'localhost:8080'", returnStdout: true).trim()
-                    if (externalIp == 'localhost:8080') {
+                    // Lire l'URL depuis le fichier
+                    def appUrl = sh(script: "cat external_ip.txt", returnStdout: true).trim()
+                    if (appUrl == "localhost:8080") {
                         env.APP_URL = "http://localhost:8080"
                         env.ACCESS_METHOD = "Port-Forward"
                     } else {
-                        env.APP_URL = "http://${externalIp}"
+                        env.APP_URL = "http://${appUrl}"
                         env.ACCESS_METHOD = "LoadBalancer"
                     }
+                    
+                    echo "✅ URL d'accès configurée: ${env.APP_URL}"
                 }
             }
         }
@@ -577,7 +569,7 @@ spec:
         stage('Tests Finaux') {
             steps {
                 script {
-                    sh '''
+                    sh """
                         echo "🧪 Tests finaux de l'application..."
                         echo "⏳ Attente supplémentaire pour le démarrage complet..."
                         sleep 30
@@ -586,15 +578,20 @@ spec:
                         echo "🔧 Test du backend..."
                         kubectl exec -n ${K8S_NAMESPACE} deployment/express-backend -- curl -f http://localhost:5001/api/health && echo "✅ Backend opérationnel" || echo "⚠️ Backend en cours de démarrage"
                         
-                        # Test du frontend via port-forward
+                        # Test du frontend
                         echo "🎨 Test du frontend..."
-                        curl -f http://localhost:8080 && echo "✅ Frontend opérationnel" || echo "⚠️ Frontend en cours de démarrage"
+                        if [ -f /tmp/portforward.pid ]; then
+                            curl -f http://localhost:8080 && echo "✅ Frontend opérationnel" || echo "⚠️ Frontend en cours de démarrage"
+                        else
+                            EXTERNAL_IP=\$(cat external_ip.txt)
+                            curl -f http://\\$EXTERNAL_IP && echo "✅ Frontend opérationnel" || echo "⚠️ Frontend en cours de démarrage"
+                        fi
                         
                         echo "📊 Résumé des tests:"
                         echo "=========================================="
                         kubectl get all -n ${K8S_NAMESPACE}
                         echo "=========================================="
-                    '''
+                    """
                 }
             }
         }
@@ -604,21 +601,22 @@ spec:
         always {
             echo "📝 Pipeline ${currentBuild.currentResult} - Build #${BUILD_NUMBER}"
             script {
-                // Arrêter le port-forward s'il est actif
+                // Nettoyage
                 sh '''
+                    # Arrêter le port-forward s'il est actif
                     if [ -f /tmp/portforward.pid ]; then
                         PF_PID=$(cat /tmp/portforward.pid)
                         kill $PF_PID 2>/dev/null || true
                         rm -f /tmp/portforward.pid
                         echo "🔴 Port-forward arrêté"
                     fi
+                    
+                    # Nettoyer les fichiers temporaires
+                    rm -f external_ip.txt 2>/dev/null || true
                 '''
                 
                 // Récupérer les informations finales
                 def k8sStatus = sh(script: "kubectl get all -n ${K8S_NAMESPACE} 2>/dev/null || echo 'Kubernetes non accessible'", returnStdout: true).trim()
-                def podsStatus = sh(script: "kubectl get pods -n ${K8S_NAMESPACE} 2>/dev/null || echo 'Pods non accessibles'", returnStdout: true).trim()
-                def servicesStatus = sh(script: "kubectl get svc -n ${K8S_NAMESPACE} 2>/dev/null || echo 'Services non accessibles'", returnStdout: true).trim()
-                
                 def buildDuration = currentBuild.durationString.replace(' and counting', '')
                 def sonarBackendUrl = "${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}-backend"
                 def sonarFrontendUrl = "${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}-frontend"
