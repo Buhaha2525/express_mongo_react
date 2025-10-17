@@ -148,7 +148,7 @@ pipeline {
                         script {
                             withSonarQubeEnv('SonarQube') {
                                 dir(env.BACKEND_DIR) {
-                                    sh """
+                                    sh '''
                                         echo "🔍 Analyse SonarQube Backend dans $(pwd)"
                                         ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
                                         -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
@@ -158,7 +158,7 @@ pipeline {
                                         -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
                                         -Dsonar.sourceEncoding=UTF-8 \
                                         -Dsonar.host.url=${SONAR_HOST_URL}
-                                    """
+                                    '''
                                 }
                             }
                         }
@@ -170,7 +170,7 @@ pipeline {
                             if (env.FRONTEND_DIR != env.BACKEND_DIR) {
                                 withSonarQubeEnv('SonarQube') {
                                     dir(env.FRONTEND_DIR) {
-                                        sh """
+                                        sh '''
                                             echo "🔍 Analyse SonarQube Frontend dans $(pwd)"
                                             ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
                                             -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
@@ -180,7 +180,7 @@ pipeline {
                                             -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
                                             -Dsonar.sourceEncoding=UTF-8 \
                                             -Dsonar.host.url=${SONAR_HOST_URL}
-                                        """
+                                        '''
                                     }
                                 }
                             }
@@ -505,7 +505,7 @@ spec:
                         """
                         
                         // Vérifier le déploiement
-                        sh """
+                        sh '''
                             echo "📊 État des déploiements:"
                             kubectl get deployments -n ${K8S_NAMESPACE}
                             echo ""
@@ -514,7 +514,7 @@ spec:
                             echo ""
                             echo "🐛 État des pods:"
                             kubectl get pods -n ${K8S_NAMESPACE}
-                        """
+                        '''
                     }
                 }
             }
@@ -524,7 +524,7 @@ spec:
             steps {
                 script {
                     withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
-                        sh """
+                        sh '''
                             echo "🏥 Vérification de la santé Kubernetes..."
                             echo "⏳ Attente du démarrage des pods..."
                             sleep 30
@@ -539,7 +539,7 @@ spec:
                             echo "📝 Logs des déploiements:"
                             kubectl logs deployment/express-backend -n ${K8S_NAMESPACE} --tail=10 || echo "Pas encore de logs backend"
                             kubectl logs deployment/react-frontend -n ${K8S_NAMESPACE} --tail=10 || echo "Pas encore de logs frontend"
-                        """
+                        '''
                     }
                 }
             }
