@@ -476,43 +476,47 @@ spec:
             }
         }
         
-        stage('Attente Démarrage Pods') {
+      stage('Attente Démarrage Pods') {
             steps {
                 script {
-                    // Version simplifiée et corrigée de l'attente des pods
-                    sh '''
-                        echo "⏳ Attente du démarrage complet des pods..."
-                        timeout 300s bash -c '
-                            for i in {1..60}; do
-                                ready_count=\$(kubectl get pods -n ${K8S_NAMESPACE} --no-headers 2>/dev/null | grep "Running" | wc -l | tr -d " ")
-                                total_count=\$(kubectl get pods -n ${K8S_NAMESPACE} --no-headers 2>/dev/null | wc -l | tr -d " ")
-                                
-                                echo "Pods prêts: \$ready_count/\$total_count"
-                                
-                                if [ "\\$total_count" -eq "5" ] && [ "\\$ready_count" -eq "5" ]; then
-                                    echo "✅ Tous les pods sont running et ready"
-                                    exit 0
-                                fi
-                                
-                                if [ "\\$i" -eq "60" ]; then
-                                    echo "⚠️ Timeout atteint après 300 secondes"
-                                    echo "État actuel:"
-                                    kubectl get pods -n ${K8S_NAMESPACE}
-                                    exit 0
-                                fi
-                                
-                                sleep 5
-                            done
-                        '
-                    '''
+                    // Version compatible macOS sans timeout
+                    sh """
+                        echo "⏳ Attente du démarrage complet des pods (max 5 minutes)..."
+                        START_TIME=\$(date +%s)
+                        MAX_WAIT=300  # 5 minutes en secondes
+                        
+                        while true; do
+                            CURRENT_TIME=\$(date +%s)
+                            ELAPSED_TIME=\$((CURRENT_TIME - START_TIME))
+                            
+                            if [ \$ELAPSED_TIME -gt \$MAX_WAIT ]; then
+                                echo "⚠️ Timeout atteint après 300 secondes"
+                                echo "État actuel des pods:"
+                                kubectl get pods -n ${K8S_NAMESPACE}
+                                break
+                            fi
+                            
+                            READY_COUNT=\$(kubectl get pods -n ${K8S_NAMESPACE} --no-headers 2>/dev/null | grep "Running" | wc -l | tr -d " ")
+                            TOTAL_COUNT=\$(kubectl get pods -n ${K8S_NAMESPACE} --no-headers 2>/dev/null | wc -l | tr -d " ")
+                            
+                            echo "Pods prêts: \$READY_COUNT/\$TOTAL_COUNT (élapsed: \$ELAPSED_TIME s)"
+                            
+                            if [ "\$TOTAL_COUNT" -eq "5" ] && [ "\$READY_COUNT" -eq "5" ]; then
+                                echo "✅ Tous les pods sont running et ready"
+                                break
+                            fi
+                            
+                            sleep 10
+                        done
+                    """
                     
-                    sh '''
+                    sh """
                         echo "🔍 État final des pods:"
                         kubectl get pods -n ${K8S_NAMESPACE} -o wide
                         echo ""
                         echo "📋 Détails des services:"
                         kubectl get svc -n ${K8S_NAMESPACE}
-                    '''
+                    """
                 }
             }
         }
