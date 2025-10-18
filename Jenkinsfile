@@ -462,7 +462,7 @@ spec:
                         kubectl apply -f k8s/frontend-deployment.yaml || echo "Échec déploiement Frontend"
                     """
                     
-                    sh """
+                    sh '''
                         echo "📊 État des déploiements:"
                         kubectl get deployments -n ${K8S_NAMESPACE} || echo "Impossible de récupérer les déploiements"
                         echo ""
@@ -471,7 +471,7 @@ spec:
                         echo ""
                         echo "🐛 État des pods:"
                         kubectl get pods -n ${K8S_NAMESPACE} || echo "Impossible de récupérer les pods"
-                    """
+                    '''
                 }
             }
         }
@@ -480,7 +480,7 @@ spec:
             steps {
                 script {
                     // Version compatible macOS sans timeout
-                    sh """
+                    sh '''
                         echo "⏳ Attente du démarrage complet des pods (max 5 minutes)..."
                         START_TIME=\$(date +%s)
                         MAX_WAIT=300  # 5 minutes en secondes
@@ -508,15 +508,15 @@ spec:
                             
                             sleep 10
                         done
-                    """
+                    '''
                     
-                    sh """
+                    sh '''
                         echo "🔍 État final des pods:"
                         kubectl get pods -n ${K8S_NAMESPACE} -o wide
                         echo ""
                         echo "📋 Détails des services:"
                         kubectl get svc -n ${K8S_NAMESPACE}
-                    """
+                    '''
                 }
             }
         }
