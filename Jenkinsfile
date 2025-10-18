@@ -570,36 +570,53 @@ spec:
             }
         }
         
-        stage('Tests Finaux') {
-            steps {
-                script {
-                    sh """
-                        echo "🧪 Tests finaux de l'application..."
-                        echo "⏳ Attente supplémentaire pour le démarrage complet..."
-                        sleep 30
-                        
-                        # Test du backend
-                        echo "🔧 Test du backend..."
-                        kubectl exec -n ${K8S_NAMESPACE} deployment/express-backend -- curl -f http://localhost:5001/api/health && echo "✅ Backend opérationnel" || echo "⚠️ Backend en cours de démarrage"
-                        
-                        # Test du frontend
-                        echo "🎨 Test du frontend..."
-                        if [ -f /tmp/portforward.pid ]; then
-                            curl -f http://localhost:8080 && echo "✅ Frontend opérationnel" || echo "⚠️ Frontend en cours de démarrage"
+       stage('Tests Finaux') {
+    steps {
+        script {
+            sh '''
+                echo "🧪 Tests finaux de l'application..."
+                echo "⏳ Attente supplémentaire pour le démarrage complet..."
+                sleep 30
+                
+                # Test du backend
+                echo "🔧 Test du backend..."
+                if kubectl exec -n ''' + K8S_NAMESPACE + ''' deployment/express-backend -- curl -f http://localhost:5001/api/health 2>/dev/null; then
+                    echo "✅ Backend opérationnel"
+                else
+                    echo "⚠️ Backend en cours de démarrage ou non accessible"
+                fi
+                
+                # Test du frontend
+                echo "🎨 Test du frontend..."
+                if [ -f /tmp/portforward.pid ]; then
+                    echo "📡 Test via port-forward (localhost:8080)..."
+                    if curl -f http://localhost:8080 2>/dev/null; then
+                        echo "✅ Frontend opérationnel via port-forward"
+                    else
+                        echo "⚠️ Frontend non accessible via port-forward"
+                    fi
+                else
+                    echo "🌐 Test via LoadBalancer..."
+                    EXTERNAL_IP=$(cat external_ip.txt 2>/dev/null)
+                    if [ -n "$EXTERNAL_IP" ]; then
+                        if curl -f "http://$EXTERNAL_IP" 2>/dev/null; then
+                            echo "✅ Frontend opérationnel via LoadBalancer"
                         else
-                            EXTERNAL_IP=\$(cat external_ip.txt)
-                            curl -f http://\\$EXTERNAL_IP && echo "✅ Frontend opérationnel" || echo "⚠️ Frontend en cours de démarrage"
+                            echo "⚠️ Frontend non accessible via LoadBalancer"
                         fi
-                        
-                        echo "📊 Résumé des tests:"
-                        echo "=========================================="
-                        kubectl get all -n ${K8S_NAMESPACE}
-                        echo "=========================================="
-                    """
-                }
-            }
+                    else
+                        echo "❌ Aucune méthode d'accès disponible"
+                    fi
+                fi
+                
+                echo "📊 Résumé des tests:"
+                echo "=========================================="
+                kubectl get all -n ''' + K8S_NAMESPACE + '''
+                echo "=========================================="
+            '''
         }
     }
+}
     
     post {
         always {
