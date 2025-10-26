@@ -1,0 +1,355 @@
+pipeline {
+    agent any
+
+    environment {
+        AWS_REGION = 'us-west-2'
+        PROJECT_NAME = 'fullstack-app'
+        ENVIRONMENT = 'dev'
+        TERRAFORM_DIR = 'terraform'
+        TF_VAR_backend_port = '5000'
+        TF_VAR_frontend_port = '3000'
+        TF_VAR_mongodb_port = '27017'
+    }
+
+    parameters {
+        choice(
+            name: 'ACTION',
+            choices: ['plan', 'apply', 'destroy'],
+            description: 'Action Terraform à exécuter'
+        )
+        string(
+            name: 'TERRAFORM_VERSION',
+            defaultValue: '1.5.0',
+            description: 'Version de Terraform à utiliser'
+        )
+        booleanParam(
+            name: 'AUTO_APPROVE',
+            defaultValue: false,
+            description: 'Approuver automatiquement sans confirmation'
+        )
+    }
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+                script {
+                    currentBuild.displayName = "#${currentBuild.number} - ${params.ACTION} - ${ENVIRONMENT}"
+                    currentBuild.description = "Terraform ${params.ACTION} for ${PROJECT_NAME}"
+                }
+            }
+        }
+
+        stage('Setup Terraform') {
+            steps {
+                script {
+                    // Installation de Terraform
+                    sh """
+                    if ! command -v terraform &> /dev/null; then
+                        wget https://releases.hashicorp.com/terraform/${params.TERRAFORM_VERSION}/terraform_${params.TERRAFORM_VERSION}_linux_amd64.zip
+                        unzip terraform_${params.TERRAFORM_VERSION}_linux_amd64.zip
+                        sudo mv terraform /usr/local/bin/
+                        rm terraform_${params.TERRAFORM_VERSION}_linux_amd64.zip
+                    fi
+                    """
+
+                    // Vérification de la version
+                    sh 'terraform version'
+                }
+            }
+        }
+
+        stage('Terraform Init') {
+            steps {
+                dir('terraform') {
+                    sh 'terraform init -input=false'
+                }
+            }
+        }
+
+        stage('Terraform Validate') {
+            steps {
+                dir('terraform') {
+                    sh 'terraform validate'
+                }
+            }
+        }
+
+        stage('Terraform Plan') {
+            when {
+                expression { params.ACTION in ['plan', 'apply'] }
+            }
+            steps {
+                dir('terraform') {
+                    sh """
+                    terraform plan \
+                        -var="aws_region=${AWS_REGION}" \
+                        -var="project_name=${PROJECT_NAME}" \
+                        -var="environment=${ENVIRONMENT}" \
+                        -var="backend_port=${TF_VAR_backend_port}" \
+                        -var="frontend_port=${TF_VAR_frontend_port}" \
+                        -var="mongodb_port=${TF_VAR_mongodb_port}" \
+                        -out=tfplan \
+                        -input=false
+                    """
+                }
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: 'terraform/tfplan', fingerprint: true
+                }
+            }
+        }
+
+        stage('Terraform Apply') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                script {
+                    if (params.AUTO_APPROVE) {
+                        dir('terraform') {
+                            sh """
+                            terraform apply \
+                                -var="aws_region=${AWS_REGION}" \
+                                -var="project_name=${PROJECT_NAME}" \
+                                -var="environment=${ENVIRONMENT}" \
+                                -var="backend_port=${TF_VAR_backend_port}" \
+                                -var="frontend_port=${TF_VAR_frontend_port}" \
+                                -var="mongodb_port=${TF_VAR_mongodb_port}" \
+                                -auto-approve \
+                                -input=false
+                            """
+                        }
+                    } else {
+                        input message: 'Appliquer les changements Terraform?',
+                              ok: 'Apply',
+                              parameters: [booleanParam(name: 'CONFIRM_APPLY', defaultValue: false)]
+                        dir('terraform') {
+                            sh """
+                            terraform apply \
+                                -var="aws_region=${AWS_REGION}" \
+                                -var="project_name=${PROJECT_NAME}" \
+                                -var="environment=${ENVIRONMENT}" \
+                                -var="backend_port=${TF_VAR_backend_port}" \
+                                -var="frontend_port=${TF_VAR_frontend_port}" \
+                                -var="mongodb_port=${TF_VAR_mongodb_port}" \
+                                -auto-approve \
+                                -input=false
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Terraform Destroy') {
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
+            steps {
+                script {
+                    if (params.AUTO_APPROVE) {
+                        dir('terraform') {
+                            sh """
+                            terraform destroy \
+                                -var="aws_region=${AWS_REGION}" \
+                                -var="project_name=${PROJECT_NAME}" \
+                                -var="environment=${ENVIRONMENT}" \
+                                -var="backend_port=${TF_VAR_backend_port}" \
+                                -var="frontend_port=${TF_VAR_frontend_port}" \
+                                -var="mongodb_port=${TF_VAR_mongodb_port}" \
+                                -auto-approve \
+                                -input=false
+                            """
+                        }
+                    } else {
+                        input message: 'Détruire l\'infrastructure Terraform? Cette action est irréversible!',
+                              ok: 'Destroy',
+                              parameters: [booleanParam(name: 'CONFIRM_DESTROY', defaultValue: false)]
+                        dir('terraform') {
+                            sh """
+                            terraform destroy \
+                                -var="aws_region=${AWS_REGION}" \
+                                -var="project_name=${PROJECT_NAME}" \
+                                -var="environment=${ENVIRONMENT}" \
+                                -var="backend_port=${TF_VAR_backend_port}" \
+                                -var="frontend_port=${TF_VAR_frontend_port}" \
+                                -var="mongodb_port=${TF_VAR_mongodb_port}" \
+                                -auto-approve \
+                                -input=false
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Extract Outputs') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                dir('terraform') {
+                    script {
+                        // Capture des outputs Terraform
+                        def backend_ip = sh(
+                            script: 'terraform output -raw backend_public_ip',
+                            returnStdout: true
+                        ).trim()
+
+                        def frontend_ip = sh(
+                            script: 'terraform output -raw frontend_public_ip',
+                            returnStdout: true
+                        ).trim()
+
+                        def mongodb_ip = sh(
+                            script: 'terraform output -raw mongodb_private_ip',
+                            returnStdout: true
+                        ).trim()
+
+                        // Sauvegarde des outputs
+                        writeFile file: 'terraform_outputs.txt', text: """
+                        Backend IP: ${backend_ip}
+                        Frontend IP: ${frontend_ip}
+                        MongoDB IP: ${mongodb_ip}
+                        Backend URL: http://${backend_ip}:5000
+                        Frontend URL: http://${frontend_ip}
+                        """
+
+                        // Mise à jour de la description du build
+                        currentBuild.description = "Deployed - Frontend: http://${frontend_ip}, Backend: http://${backend_ip}:5000"
+                    }
+                }
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: 'terraform_outputs.txt', fingerprint: true
+                    dir('terraform') {
+                        sh 'terraform output -json > terraform_outputs.json'
+                        archiveArtifacts artifacts: 'terraform/terraform_outputs.json', fingerprint: true
+                    }
+                }
+            }
+        }
+
+        stage('Health Check') {
+            when {
+                expression { params.ACTION == 'apply' }
+            }
+            steps {
+                script {
+                    dir('terraform') {
+                        def backend_ip = sh(
+                            script: 'terraform output -raw backend_public_ip',
+                            returnStdout: true
+                        ).trim()
+
+                        // Test de santé de l'API backend
+                        sh """
+                        echo "Testing backend health..."
+                        curl -f http://${backend_ip}:5000/api/health || echo "Backend health check failed"
+                        """
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Nettoyage
+            sh 'rm -rf terraform/.terraform terraform/tfplan terraform/terraform.tfstate.backup || true'
+
+            // Rapport de build
+            publishHTML([
+                allowMissing: false,
+                alwaysLinkToLastBuild: true,
+                keepAll: true,
+                reportDir: 'terraform',
+                reportFiles: '**/*.html',
+                reportName: 'Terraform Reports'
+            ])
+        }
+
+        success {
+            script {
+                if (params.ACTION == 'apply') {
+                    dir('terraform') {
+                        def frontend_ip = sh(
+                            script: 'terraform output -raw frontend_public_ip',
+                            returnStdout: true
+                        ).trim()
+
+                        def backend_ip = sh(
+                            script: 'terraform output -raw backend_public_ip',
+                            returnStdout: true
+                        ).trim()
+
+                        emailext (
+                            subject: "✅ Terraform Deployment Successful - ${PROJECT_NAME}",
+                            body: """
+                            <h2>🚀 Déploiement Terraform Réussi</h2>
+                            <p><strong>Projet:</strong> ${PROJECT_NAME}</p>
+                            <p><strong>Environnement:</strong> ${ENVIRONMENT}</p>
+                            <p><strong>Build:</strong> ${currentBuild.number}</p>
+                            <br>
+                            <h3>📊 URLs de l'application:</h3>
+                            <ul>
+                                <li><strong>Frontend:</strong> <a href="http://${frontend_ip}">http://${frontend_ip}</a></li>
+                                <li><strong>Backend API:</strong> <a href="http://${backend_ip}:5000/api/health">http://${backend_ip}:5000</a></li>
+                            </ul>
+                            <br>
+                            <h3>🔧 Commandes SSH:</h3>
+                            <pre>
+    Backend:  ssh -i terraform-key.pem ec2-user@${backend_ip}
+    Frontend: ssh -i terraform-key.pem ec2-user@${frontend_ip}
+    MongoDB:  ssh -i terraform-key.pem ec2-user@${mongodb_ip}
+                            </pre>
+                            <br>
+                            <p>Consultez les artefacts du build pour plus de détails.</p>
+                            """,
+                            to: '${DEFAULT_RECIPIENTS}'
+                        )
+                    }
+                }
+            }
+        }
+
+        failure {
+            emailext (
+                subject: "❌ Terraform Deployment Failed - ${PROJECT_NAME}",
+                body: """
+                <h2>❌ Échec du Déploiement Terraform</h2>
+                <p><strong>Projet:</strong> ${PROJECT_NAME}</p>
+                <p><strong>Environnement:</strong> ${ENVIRONMENT}</p>
+                <p><strong>Build:</strong> ${currentBuild.number}</p>
+                <p><strong>Action:</strong> ${params.ACTION}</p>
+                <br>
+                <p>Veuillez consulter les logs du build pour plus de détails.</p>
+                """,
+                to: '${DEFAULT_RECIPIENTS}'
+            )
+        }
+
+        unstable {
+            emailext (
+                subject: "⚠️ Terraform Deployment Unstable - ${PROJECT_NAME}",
+                body: """
+                <h2>⚠️ Déploiement Terraform Instable</h2>
+                <p><strong>Projet:</strong> ${PROJECT_NAME}</p>
+                <p><strong>Environnement:</strong> ${ENVIRONMENT}</p>
+                <p><strong>Build:</strong> ${currentBuild.number}</p>
+                <br>
+                <p>Le déploiement a réussi mais avec des avertissements.</p>
+                """,
+                to: '${DEFAULT_RECIPIENTS}'
+            )
+        }
+    }
+}

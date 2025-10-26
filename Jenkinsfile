@@ -2,760 +2,399 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_CREDENTIALS_ID = 'docker-hub-credentials'
-        DOCKER_REGISTRY = 'dmzz'
-        FRONTEND_IMAGE = "${DOCKER_REGISTRY}/express-frontend"
-        BACKEND_IMAGE = "${DOCKER_REGISTRY}/express-backend"
-        SONARQUBE_SCANNER_HOME = tool 'SonarScanner'
-        SONAR_HOST_URL = 'http://localhost:9000'
-        SONAR_PROJECT_KEY = 'express_mongo_react'
+        GITHUB_CREDENTIALS_ID = 'github-credentials'
+        AWS_CREDENTIALS_ID = 'aws-credentials'
         EMAIL_RECIPIENTS = 'sowdmzz@gmail.com'
-        K8S_NAMESPACE = 'express-app'
+        TERRAFORM_VERSION = '1.5.0'
+        AWS_DEFAULT_REGION = 'us-west-2'
     }
-    
+
     stages {
-        stage('Checkout') {
+        stage('Checkout Terraform Branch') {
             steps {
-                git branch: 'main', 
+                git branch: 'Terraform',
                 url: 'https://github.com/Buhaha2525/express_mongo_react.git',
-                credentialsId: 'github-credentials'
+                credentialsId: "${GITHUB_CREDENTIALS_ID}"
             }
         }
-        
-        stage('Analyse Structure') {
+
+        stage('Analyse Structure Terraform') {
             steps {
                 sh '''
-                    echo "🔍 Analyse détaillée de la structure..."
-                    echo "=== Structure complète ==="
-                    find . -type f -name "package.json" | head -20
+                    echo "🔍 Analyse de la structure Terraform..."
+                    echo "=== Fichiers Terraform ==="
+                    find . -name "*.tf" -o -name "*.tfvars" | head -20
                     echo ""
-                    echo "=== Arborescence racine ==="
+                    echo "=== Structure du projet ==="
                     ls -la
                     echo ""
-                    echo "=== Dossiers Kubernetes ==="
-                    find . -name "*.yaml" -o -name "*.yml" | head -10
+                    echo "=== Contenu des répertoires ==="
+                    find . -maxdepth 2 -type d | head -20
                 '''
             }
         }
-        
-        stage('Détection Automatique des Dossiers') {
+
+        stage('Configuration AWS et Terraform') {
             steps {
-                script {
-                    def frontendDir = sh(
-                        script: 'find . -name "package.json" -exec dirname {} \\; | grep -iE "(front|client)" | head -1 || find . -maxdepth 2 -name "package.json" -exec dirname {} \\; | head -1',
-                        returnStdout: true
-                    ).trim()
-                    
-                    def backendDir = sh(
-                        script: 'find . -name "package.json" -exec dirname {} \\; | grep -iE "(back|server|api)" | head -1 || find . -maxdepth 2 -name "package.json" -exec dirname {} \\; | tail -1',
-                        returnStdout: true
-                    ).trim()
-                    
-                    if (!backendDir && frontendDir) {
-                        backendDir = frontendDir
-                    }
-                    if (!frontendDir && backendDir) {
-                        frontendDir = backendDir
-                    }
-                    if (!frontendDir && !backendDir) {
-                        frontendDir = "."
-                        backendDir = "."
-                    }
-                    
-                    env.FRONTEND_DIR = frontendDir
-                    env.BACKEND_DIR = backendDir
-                    
-                    echo "📁 Dossiers détectés:"
-                    echo "Frontend: ${env.FRONTEND_DIR}"
-                    echo "Backend: ${env.BACKEND_DIR}"
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: "${AWS_CREDENTIALS_ID}",
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    sh '''
+                        echo "🔐 Configuration AWS chargée depuis Jenkins Credentials"
+                        echo "📥 Installation de Terraform ${TERRAFORM_VERSION}..."
+
+                        # Téléchargement et installation de Terraform
+                        wget -q https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+                        unzip -o terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+                        sudo mv terraform /usr/local/bin/
+                        rm -f terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+
+                        echo "✅ Terraform installé avec succès"
+                        terraform version
+
+                        echo "🔑 Vérification des credentials AWS..."
+                        echo "Région AWS: ${AWS_DEFAULT_REGION}"
+
+                        # Installation d'AWS CLI si non présent
+                        if ! command -v aws &> /dev/null; then
+                            echo "📥 Installation d'AWS CLI..."
+                            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+                            unzip awscliv2.zip
+                            sudo ./aws/install
+                            rm -rf awscliv2.zip aws/
+                        fi
+
+                        # Vérification des credentials AWS
+                        aws sts get-caller-identity --region ${AWS_DEFAULT_REGION} && echo "✅ Credentials AWS valides" || echo "⚠️ Vérification AWS CLI échouée"
+                    '''
                 }
             }
         }
-        
-        stage('Vérification des Dossiers') {
+
+        stage('Initialisation Terraform') {
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: "${AWS_CREDENTIALS_ID}",
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    sh '''
+                        echo "🚀 Initialisation de Terraform..."
+                        terraform init -upgrade -reconfigure -input=false
+
+                        echo "📋 Validation de la configuration..."
+                        terraform validate
+
+                        echo "📝 Planification de l'infrastructure..."
+                        terraform plan -out=tfplan -var="environment=jenkins" -var="aws_region=${AWS_DEFAULT_REGION}"
+                    '''
+                }
+            }
+        }
+
+        stage('Vérification de Sécurité') {
             steps {
                 sh '''
-                    echo "✅ Vérification des dossiers détectés..."
-                    test -f "${FRONTEND_DIR}/package.json" && echo "✅ package.json trouvé dans frontend" || echo "❌ package.json NON trouvé dans frontend"
-                    test -f "${BACKEND_DIR}/package.json" && echo "✅ package.json trouvé dans backend" || echo "❌ package.json NON trouvé dans backend"
+                    echo "🔒 Vérifications de sécurité et qualité..."
+
+                    # Vérification du formatage
+                    echo "🎨 Vérification du formatage du code..."
+                    terraform fmt -check -recursive || echo "⚠️ Certains fichiers ne sont pas formatés correctement"
+
+                    # Vérification de la syntaxe
+                    echo "📝 Validation syntaxique..."
+                    terraform validate
+
+                    # Vérification des dépendances
+                    echo "🔍 Vérification des dépendances..."
+                    terraform providers schema -json > /dev/null && echo "✅ Schéma des providers valide" || echo "⚠️ Problème avec les providers"
                 '''
             }
         }
-        
-        stage('Installation Dépendances') {
-            parallel {
-                stage('Install Frontend') {
-                    steps {
-                        script {
-                            dir(env.FRONTEND_DIR) {
-                                sh '''
-                                    echo "📦 Installation dépendances Frontend dans $(pwd)"
-                                    if [ -f "package.json" ]; then
-                                        npm install
-                                        echo "✅ Dépendances frontend installées avec succès"
-                                    else
-                                        echo "❌ package.json non trouvé dans $(pwd)"
-                                        exit 1
+
+        stage('Déploiement Infrastructure AWS') {
+            steps {
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: "${AWS_CREDENTIALS_ID}",
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    sh '''
+                        echo "🏗️ Déploiement de l'infrastructure AWS..."
+                        terraform apply -auto-approve -input=false tfplan
+
+                        echo "📊 État du déploiement..."
+                        terraform show -no-color
+                    '''
+                }
+            }
+        }
+
+        stage('Récupération des Outputs') {
+            steps {
+                script {
+                    // Récupérer les outputs Terraform
+                    try {
+                        env.TERRAFORM_OUTPUTS = sh(
+                            script: 'terraform output -json 2>/dev/null || echo "{}"',
+                            returnStdout: true
+                        ).trim()
+                    } catch (Exception e) {
+                        env.TERRAFORM_OUTPUTS = "{}"
+                        echo "⚠️ Impossible de récupérer les outputs Terraform"
+                    }
+
+                    // Essayer de récupérer des URLs spécifiques
+                    try {
+                        env.APP_URL = sh(
+                            script: 'terraform output -raw app_url 2>/dev/null || echo "non-défini"',
+                            returnStdout: true
+                        ).trim()
+                    } catch (Exception e) {
+                        env.APP_URL = "non-défini"
+                    }
+
+                    try {
+                        env.LB_DNS = sh(
+                            script: 'terraform output -raw load_balancer_dns 2>/dev/null || echo "non-défini"',
+                            returnStdout: true
+                        ).trim()
+                    } catch (Exception e) {
+                        env.LB_DNS = "non-défini"
+                    }
+
+                    try {
+                        env.EC2_IP = sh(
+                            script: 'terraform output -raw ec2_public_ip 2>/dev/null || echo "non-défini"',
+                            returnStdout: true
+                        ).trim()
+                    } catch (Exception e) {
+                        env.EC2_IP = "non-défini"
+                    }
+
+                    echo "📄 Outputs Terraform récupérés:"
+                    echo "APP_URL: ${env.APP_URL}"
+                    echo "LB_DNS: ${env.LB_DNS}"
+                    echo "EC2_IP: ${env.EC2_IP}"
+                }
+            }
+        }
+
+        stage('Tests et Validation') {
+            steps {
+                script {
+                    echo "🧪 Tests de l'infrastructure déployée..."
+
+                    sh '''
+                        echo "📋 Liste des ressources déployées..."
+                        terraform state list
+
+                        echo "🔍 Détails de l'état..."
+                        terraform show -no-color
+                    '''
+
+                    // Tests de connectivité si des URLs sont disponibles
+                    if (env.APP_URL != "non-défini" && env.APP_URL != "") {
+                        sh """
+                            echo "🌐 Test de l'application: ${env.APP_URL}"
+                            timeout 30s bash -c '
+                                for i in {1..10}; do
+                                    if curl -f -s -o /dev/null -w "Code HTTP: %{http_code}\\\\n" "${env.APP_URL}"; then
+                                        echo "✅ Application accessible"
+                                        exit 0
                                     fi
-                                '''
-                            }
-                        }
+                                    echo "⏳ Tentative \$i/10 - Application non encore accessible"
+                                    sleep 10
+                                done
+                                echo "❌ Application non accessible après 10 tentatives"
+                                exit 1
+                            ' || echo "⚠️ Test de connectivité échoué"
+                        """
                     }
-                }
-                stage('Install Backend') {
-                    steps {
-                        script {
-                            if (env.BACKEND_DIR != env.FRONTEND_DIR) {
-                                dir(env.BACKEND_DIR) {
-                                    sh '''
-                                        echo "📦 Installation dépendances Backend dans $(pwd)"
-                                        if [ -f "package.json" ]; then
-                                            npm install
-                                            echo "✅ Dépendances backend installées avec succès"
-                                        else
-                                            echo "❌ package.json non trouvé dans $(pwd)"
-                                            exit 1
-                                        fi
-                                    '''
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        stage('Analyse SonarQube') {
-            parallel {
-                stage('Analyse Backend') {
-                    steps {
-                        script {
-                            withSonarQubeEnv('SonarQube') {
-                                dir(env.BACKEND_DIR) {
-                                    sh '''
-                                        echo "🔍 Analyse SonarQube Backend dans $(pwd)"
-                                        ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
-                                        -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
-                                        -Dsonar.projectName='Express Backend' \
-                                        -Dsonar.projectVersion=${BUILD_NUMBER} \
-                                        -Dsonar.sources=. \
-                                        -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
-                                        -Dsonar.sourceEncoding=UTF-8 \
-                                        -Dsonar.host.url=${SONAR_HOST_URL}
-                                    '''
-                                }
-                            }
-                        }
-                    }
-                }
-                stage('Analyse Frontend') {
-                    steps {
-                        script {
-                            if (env.FRONTEND_DIR != env.BACKEND_DIR) {
-                                withSonarQubeEnv('SonarQube') {
-                                    dir(env.FRONTEND_DIR) {
-                                        sh '''
-                                            echo "🔍 Analyse SonarQube Frontend dans $(pwd)"
-                                            ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
-                                            -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
-                                            -Dsonar.projectName='React Frontend' \
-                                            -Dsonar.projectVersion=${BUILD_NUMBER} \
-                                            -Dsonar.sources=. \
-                                            -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
-                                            -Dsonar.sourceEncoding=UTF-8 \
-                                            -Dsonar.host.url=${SONAR_HOST_URL}
-                                        '''
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        
-        stage('Wait for Quality Gate') {
-            steps {
-                script {
-                    echo "⏳ Attente des résultats SonarQube..."
-                    sleep 30
-                    
-                    def projects = ["${SONAR_PROJECT_KEY}-backend"]
-                    if (env.FRONTEND_DIR != env.BACKEND_DIR) {
-                        projects.add("${SONAR_PROJECT_KEY}-frontend")
-                    }
-                    
-                    def qualityGateResults = [:]
-                    def allPassed = true
-                    
-                    projects.each { projectKey ->
-                        try {
-                            timeout(time: 1, unit: 'MINUTES') {
-                                def qualityGate = waitForQualityGate abortPipeline: false
-                                qualityGateResults[projectKey] = qualityGate.status
-                                echo "✅ Quality Gate ${qualityGate.status} pour ${projectKey}"
-                            }
-                        } catch (Exception e) {
-                            echo "⚠️ Erreur Quality Gate pour ${projectKey}: ${e.getMessage()}"
-                            qualityGateResults[projectKey] = 'FAILED'
-                            allPassed = false
-                        }
-                    }
-                    
-                    if (!allPassed) {
-                        currentBuild.result = 'UNSTABLE'
-                    }
-                    
-                    env.SONAR_RESULTS = qualityGateResults.toString()
-                }
-            }
-        }
-        
-        stage('Security Scan') {
-            steps {
-                script {
-                    dir(env.FRONTEND_DIR) {
-                        sh '''
-                            echo "🔒 Analyse sécurité Frontend..."
-                            npm audit --audit-level moderate --production || true
-                        '''
-                    }
-                    if (env.BACKEND_DIR != env.FRONTEND_DIR) {
-                        dir(env.BACKEND_DIR) {
-                            sh '''
-                                echo "🔒 Analyse sécurité Backend..."
-                                npm audit --audit-level moderate --production || true
-                            '''
-                        }
-                    }
-                }
-            }
-        }
-        
-        stage('Build Docker Images') {
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: "${DOCKER_CREDENTIALS_ID}", 
-                    usernameVariable: 'DOCKER_USERNAME', 
-                    passwordVariable: 'DOCKER_PASSWORD'
-                )]) {
-                    sh '''
-                        echo "🔐 Connexion à Docker Hub..."
-                        echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
 
-                        echo "🔨 Construction des images Docker..."
-                        docker compose build --no-cache
-
-                        echo "🏷️  Taggage des images..."
-                        docker tag pipesmartv2-frontend:latest ${FRONTEND_IMAGE}:${BUILD_NUMBER}
-                        docker tag pipesmartv2-frontend:latest ${FRONTEND_IMAGE}:latest
-                        docker tag pipesmartv2-backend:latest ${BACKEND_IMAGE}:${BUILD_NUMBER}
-                        docker tag pipesmartv2-backend:latest ${BACKEND_IMAGE}:latest
-                    '''
-                }
-            }
-        }
-        
-        stage('Préparation Manifests Kubernetes') {
-            steps {
-                script {
-                    sh 'mkdir -p k8s'
-                    
-                    writeFile file: 'k8s/backend-deployment.yaml', text: """apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: express-backend
-  namespace: ${K8S_NAMESPACE}
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: express-backend
-  template:
-    metadata:
-      labels:
-        app: express-backend
-    spec:
-      containers:
-      - name: express-backend
-        image: ${BACKEND_IMAGE}:${BUILD_NUMBER}
-        ports:
-        - containerPort: 5001
-        env:
-        - name: NODE_ENV
-          value: "production"
-        - name: PORT
-          value: "5001"
-        - name: MONGODB_URI
-          value: "mongodb://mongo-service:27017/smartphoneDB"
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "256Mi"
-            cpu: "200m"
-        livenessProbe:
-          httpGet:
-            path: /api/health
-            port: 5001
-          initialDelaySeconds: 30
-          periodSeconds: 10
-        readinessProbe:
-          httpGet:
-            path: /api/health
-            port: 5001
-          initialDelaySeconds: 5
-          periodSeconds: 5
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: backend-service
-  namespace: ${K8S_NAMESPACE}
-spec:
-  selector:
-    app: express-backend
-  ports:
-  - port: 5001
-    targetPort: 5001
-"""
-                    
-                    writeFile file: 'k8s/frontend-deployment.yaml', text: """apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: react-frontend
-  namespace: ${K8S_NAMESPACE}
-spec:
-  replicas: 2
-  selector:
-    matchLabels:
-      app: react-frontend
-  template:
-    metadata:
-      labels:
-        app: react-frontend
-    spec:
-      containers:
-      - name: react-frontend
-        image: ${FRONTEND_IMAGE}:${BUILD_NUMBER}
-        ports:
-        - containerPort: 5173
-        env:
-        - name: VITE_API_URL
-          value: "http://backend-service:5001/api"
-        resources:
-          requests:
-            memory: "128Mi"
-            cpu: "100m"
-          limits:
-            memory: "256Mi"
-            cpu: "200m"
-        livenessProbe:
-          httpGet:
-            path: /
-            port: 5173
-          initialDelaySeconds: 30
-          periodSeconds: 10
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: frontend-service
-  namespace: ${K8S_NAMESPACE}
-spec:
-  type: LoadBalancer
-  selector:
-    app: react-frontend
-  ports:
-  - port: 80
-    targetPort: 5173
-"""
-                    
-                    writeFile file: 'k8s/mongo-deployment.yaml', text: """apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: mongo
-  namespace: ${K8S_NAMESPACE}
-spec:
-  selector:
-    matchLabels:
-      app: mongo
-  template:
-    metadata:
-      labels:
-        app: mongo
-    spec:
-      containers:
-      - name: mongo
-        image: mongo:6
-        ports:
-        - containerPort: 27017
-        env:
-        - name: MONGO_INITDB_DATABASE
-          value: "smartphoneDB"
-        resources:
-          requests:
-            memory: "256Mi"
-            cpu: "100m"
-          limits:
-            memory: "512Mi"
-            cpu: "200m"
-
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: mongo-service
-  namespace: ${K8S_NAMESPACE}
-spec:
-  selector:
-    app: mongo
-  ports:
-  - port: 27017
-    targetPort: 27017
-"""
-                    
-                    echo "✅ Manifests Kubernetes générés"
-                    sh 'ls -la k8s/'
-                }
-            }
-        }
-        
-        stage('Déploiement Kubernetes') {
-            steps {
-                script {
-                    sh """
-                        echo "🔍 Vérification de l'accès Kubernetes..."
-                        kubectl version --client || echo "kubectl non disponible"
-                    """
-                    
-                    sh """
-                        echo "🏗️  Configuration Kubernetes..."
-                        kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f - || echo "Namespace déjà existant"
-                    """
-                    
-                    sh """
-                        echo "📦 Déploiement MongoDB..."
-                        kubectl apply -f k8s/mongo-deployment.yaml || echo "Échec déploiement MongoDB"
-                    """
-                    
-                    sh """
-                        echo "⏳ Attente du démarrage de MongoDB..."
-                        # Version compatible macOS sans timeout
-                        for i in {1..24}; do
-                            if kubectl get pods -n ${K8S_NAMESPACE} -l app=mongo 2>/dev/null | grep -q Running; then
-                                echo "✅ MongoDB est running"
-                                break
-                            fi
-                            echo "En attente de MongoDB... (\$i/24)"
-                            sleep 5
-                        done
-                        echo "⚠️ Continuation même si MongoDB n'est pas encore ready"
-                    """
-                    
-                    sh """
-                        echo "🚀 Déploiement Backend..."
-                        kubectl apply -f k8s/backend-deployment.yaml || echo "Échec déploiement Backend"
-                    """
-                    
-                    sh """
-                        echo "🎨 Déploiement Frontend..."
-                        kubectl apply -f k8s/frontend-deployment.yaml || echo "Échec déploiement Frontend"
-                    """
-                    
-                    sh '''
-                        echo "📊 État des déploiements:"
-                        kubectl get deployments -n ${K8S_NAMESPACE} || echo "Impossible de récupérer les déploiements"
-                        echo ""
-                        echo "📡 État des services:"
-                        kubectl get services -n ${K8S_NAMESPACE} || echo "Impossible de récupérer les services"
-                        echo ""
-                        echo "🐛 État des pods:"
-                        kubectl get pods -n ${K8S_NAMESPACE} || echo "Impossible de récupérer les pods"
-                    '''
-                }
-            }
-        }
-        
-        stage('Attente Démarrage Pods') {
-            steps {
-                script {
-                    // Version compatible macOS sans timeout
-                    sh '''
-                        echo "⏳ Attente du démarrage complet des pods (max 5 minutes)..."
-                        START_TIME=\$(date +%s)
-                        MAX_WAIT=300  # 5 minutes en secondes
-                        
-                        while true; do
-                            CURRENT_TIME=\$(date +%s)
-                            ELAPSED_TIME=\$((CURRENT_TIME - START_TIME))
-                            
-                            if [ \$ELAPSED_TIME -gt \$MAX_WAIT ]; then
-                                echo "⚠️ Timeout atteint après 300 secondes"
-                                echo "État actuel des pods:"
-                                kubectl get pods -n ${K8S_NAMESPACE}
-                                break
-                            fi
-                            
-                            READY_COUNT=\$(kubectl get pods -n ${K8S_NAMESPACE} --no-headers 2>/dev/null | grep "Running" | wc -l | tr -d " ")
-                            TOTAL_COUNT=\$(kubectl get pods -n ${K8S_NAMESPACE} --no-headers 2>/dev/null | wc -l | tr -d " ")
-                            
-                            echo "Pods prêts: \$READY_COUNT/\$TOTAL_COUNT (élapsed: \$ELAPSED_TIME s)"
-                            
-                            if [ "\$TOTAL_COUNT" -eq "5" ] && [ "\$READY_COUNT" -eq "5" ]; then
-                                echo "✅ Tous les pods sont running et ready"
-                                break
-                            fi
-                            
-                            sleep 10
-                        done
-                    '''
-                    
-                    sh '''
-                        echo "🔍 État final des pods:"
-                        kubectl get pods -n ${K8S_NAMESPACE} -o wide
-                        echo ""
-                        echo "📋 Détails des services:"
-                        kubectl get svc -n ${K8S_NAMESPACE}
-                    '''
-                }
-            }
-        }
-        
-        stage('Configuration Accès Application') {
-            steps {
-                script {
-                    // Version corrigée sans problèmes d'échappement
-                    sh '''
-                        echo "🔗 Configuration de l'accès à l'application..."
-                        
-                        # Vérifier si LoadBalancer a une IP externe
-                        EXTERNAL_IP=\$(kubectl get svc frontend-service -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
-                        
-                        if [ -n "\\$EXTERNAL_IP" ]; then
-                            echo "🌐 IP Externe LoadBalancer: \\$EXTERNAL_IP"
-                            echo "🎯 URL de l'application: http://\\$EXTERNAL_IP"
-                            echo "\\$EXTERNAL_IP" > external_ip.txt
-                        else
-                            echo "🔧 LoadBalancer en attente d'IP, configuration du port-forward..."
-                            
-                            # Démarrer port-forward en arrière-plan
-                            kubectl port-forward svc/frontend-service 8080:80 -n ${K8S_NAMESPACE} --address=0.0.0.0 &
-                            PF_PID=\\$!
-                            echo \\$PF_PID > /tmp/portforward.pid
-                            
-                            sleep 5
-                            
-                            echo "🌐 URL d'accès temporaire: http://localhost:8080"
-                            echo "📝 Le port-forward est actif (PID: \\$PF_PID)"
-                            echo "localhost:8080" > external_ip.txt
-                            
-                            # Tester l'accès
-                            echo "🧪 Test de l'application..."
-                            curl -f http://localhost:8080 && echo "✅ Frontend accessible via port-forward" || echo "❌ Frontend non accessible"
-                        fi
-                    '''
-                    
-                    // Lire l'URL depuis le fichier
-                    def appUrl = sh(script: "cat external_ip.txt", returnStdout: true).trim()
-                    if (appUrl == "localhost:8080") {
-                        env.APP_URL = "http://localhost:8080"
-                        env.ACCESS_METHOD = "Port-Forward"
-                    } else {
-                        env.APP_URL = "http://${appUrl}"
-                        env.ACCESS_METHOD = "LoadBalancer"
+                    if (env.LB_DNS != "non-défini" && env.LB_DNS != "") {
+                        sh """
+                            echo "🌐 Test du Load Balancer: ${env.LB_DNS}"
+                            curl -f -s -o /dev/null -w "Code HTTP: %{http_code}\\\\n" "http://${env.LB_DNS}" && echo "✅ Load Balancer accessible" || echo "⚠️ Load Balancer non accessible"
+                        """
                     }
-                    
-                    echo "✅ URL d'accès configurée: ${env.APP_URL}"
+
+                    if (env.EC2_IP != "non-défini" && env.EC2_IP != "") {
+                        sh """
+                            echo "🌐 Test de l\'EC2: ${env.EC2_IP}"
+                            ping -c 3 ${env.EC2_IP} && echo "✅ EC2 accessible" || echo "⚠️ EC2 non accessible via ping"
+                        """
+                    }
                 }
             }
         }
-        
-        stage('Tests Finaux') {
+
+        stage('Documentation et Rapports') {
             steps {
-                script {
-                    // Lecture séparée de l'IP externe pour éviter les problèmes d'échappement
-                    def externalIpContent = sh(script: "cat external_ip.txt 2>/dev/null || echo 'localhost:8080'", returnStdout: true).trim()
-                    
-                    sh '''
-                        echo "🧪 Tests finaux de l'application..."
-                        echo "⏳ Attente supplémentaire pour le démarrage complet..."
-                        sleep 30
-                        
-                        # Test du backend
-                        echo "🔧 Test du backend..."
-                        if kubectl exec -n ${K8S_NAMESPACE} deployment/express-backend -- curl -f http://localhost:5001/api/health 2>/dev/null; then
-                            echo "✅ Backend opérationnel"
-                        else
-                            echo "⚠️ Backend en cours de démarrage ou non accessible"
-                        fi
-                        
-                        # Test du frontend
-                        echo "🎨 Test du frontend..."
-                        if [ -f /tmp/portforward.pid ]; then
-                            echo "📡 Test via port-forward (localhost:8080)..."
-                            if curl -f http://localhost:8080 2>/dev/null; then
-                                echo "✅ Frontend opérationnel via port-forward"
-                            else
-                                echo "⚠️ Frontend non accessible via port-forward"
-                            fi
-                        else
-                            echo "🌐 Test via LoadBalancer..."
-                            if curl -f "http://${externalIpContent}" 2>/dev/null; then
-                                echo "✅ Frontend opérationnel via LoadBalancer"
-                            else
-                                echo "⚠️ Frontend non accessible via LoadBalancer"
-                            fi
-                        fi
-                        
-                        echo "📊 Résumé des tests:"
-                        echo "=========================================="
-                        kubectl get all -n ${K8S_NAMESPACE}
-                        echo "=========================================="
-                    '''
-                }
+                sh '''
+                    echo "📋 Génération de la documentation..."
+
+                    # Générer un graphique des ressources
+                    terraform graph | dot -Tpng > infrastructure.png 2>/dev/null || echo "⚠️ Impossible de générer le graphique"
+
+                    # Sauvegarder l'état
+                    terraform show -no-color > terraform_state.txt
+
+                    echo "📁 Fichiers générés:"
+                    ls -la *.png *.txt 2>/dev/null || echo "Aucun fichier de rapport généré"
+                '''
+
+                // Archive des artefacts
+                archiveArtifacts artifacts: '*.png,*.txt,*.json', fingerprint: true
             }
         }
     }
-    
+
     post {
         always {
             echo "📝 Pipeline ${currentBuild.currentResult} - Build #${BUILD_NUMBER}"
             script {
-                // Nettoyage
-                sh '''
-                    # Arrêter le port-forward s'il est actif
-                    if [ -f /tmp/portforward.pid ]; then
-                        PF_PID=$(cat /tmp/portforward.pid)
-                        kill $PF_PID 2>/dev/null || true
-                        rm -f /tmp/portforward.pid
-                        echo "🔴 Port-forward arrêté"
-                    fi
-                    
-                    # Nettoyer les fichiers temporaires
-                    rm -f external_ip.txt 2>/dev/null || true
-                '''
-                
-                // Récupérer les informations finales
-                def k8sStatus = sh(script: "kubectl get all -n ${K8S_NAMESPACE} 2>/dev/null || echo 'Kubernetes non accessible'", returnStdout: true).trim()
                 def buildDuration = currentBuild.durationString.replace(' and counting', '')
-                def sonarBackendUrl = "${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}-backend"
-                def sonarFrontendUrl = "${SONAR_HOST_URL}/dashboard?id=${SONAR_PROJECT_KEY}-frontend"
-                
-                def sonarStatus = "Analyses terminées"
-                try {
-                    sonarStatus = env.SONAR_RESULTS ?: "Analyses effectuées"
-                } catch (e) {
-                    sonarStatus = "Analyses effectuées"
-                }
-                
-                def structureInfo = "Frontend: ${env.FRONTEND_DIR}, Backend: ${env.BACKEND_DIR}"
-                def appUrl = env.APP_URL ?: "http://localhost:8080"
-                def accessMethod = env.ACCESS_METHOD ?: "Port-Forward"
-                
+                def terraformVersion = sh(script: "terraform version | head -1", returnStdout: true).trim()
+
+                // Récupération des ressources déployées
+                def resourceCount = sh(script: "terraform state list 2>/dev/null | wc -l || echo '0'", returnStdout: true).trim()
+
                 // Configuration email
                 def emailSubject = ""
                 def emailBody = ""
-                
+
                 switch(currentBuild.currentResult) {
                     case 'SUCCESS':
-                        emailSubject = "✅ SUCCÈS - Déploiement K8s ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+                        emailSubject = "✅ SUCCÈS - Infrastructure AWS Terraform ${env.JOB_NAME} #${env.BUILD_NUMBER}"
                         emailBody = """
                         <html>
                         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
                         <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 5px;">
-                            <h2 style="color: #28a745; border-bottom: 2px solid #28a745; padding-bottom: 10px;">🚀 Déploiement Kubernetes Réussi!</h2>
-                            
-                            <p>Le pipeline <strong>${env.JOB_NAME}</strong> s'est terminé avec succès.</p>
-                            
-                            <h3 style="color: #0056b3;">📊 Détails de la build:</h3>
+                            <h2 style="color: #28a745; border-bottom: 2px solid #28a745; padding-bottom: 10px;">🚀 Infrastructure AWS Déployée!</h2>
+
+                            <p>Le pipeline Terraform <strong>${env.JOB_NAME}</strong> s'est terminé avec succès.</p>
+
+                            <h3 style="color: #0056b3;">📊 Détails du déploiement:</h3>
                             <ul>
                                 <li><strong>Build:</strong> #${env.BUILD_NUMBER}</li>
                                 <li><strong>Job:</strong> ${env.JOB_NAME}</li>
                                 <li><strong>URL Jenkins:</strong> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></li>
                                 <li><strong>Durée:</strong> ${buildDuration}</li>
                                 <li><strong>Date:</strong> ${new Date().format("dd/MM/yyyy à HH:mm")}</li>
-                                <li><strong>Namespace K8s:</strong> ${K8S_NAMESPACE}</li>
-                                <li><strong>Méthode d'accès:</strong> ${accessMethod}</li>
-                                <li><strong>Structure détectée:</strong> ${structureInfo}</li>
-                                <li><strong>Statut SonarQube:</strong> ${sonarStatus}</li>
+                                <li><strong>Version Terraform:</strong> ${terraformVersion}</li>
+                                <li><strong>Région AWS:</strong> ${AWS_DEFAULT_REGION}</li>
+                                <li><strong>Ressources déployées:</strong> ${resourceCount}</li>
                             </ul>
-                            
-                            <h3 style="color: #0056b3;">🐳 Images Docker déployées:</h3>
-                            <ul>
-                                <li><strong>Frontend:</strong> ${FRONTEND_IMAGE}:${BUILD_NUMBER}</li>
-                                <li><strong>Backend:</strong> ${BACKEND_IMAGE}:${BUILD_NUMBER}</li>
-                                <li><strong>MongoDB:</strong> mongo:6</li>
-                            </ul>
-                            
-                            <h3 style="color: #0056b3;">🌐 Accès à l'application:</h3>
+
+                            ${env.APP_URL != "non-défini" ? """
+                            <h3 style="color: #0056b3;">🌐 URL de l'application:</h3>
                             <div style="background-color: #e7f3ff; padding: 15px; border-radius: 5px; border: 1px solid #b3d9ff;">
-                                <h4 style="margin-top: 0; color: #0066cc;">${appUrl}</h4>
-                                <p><strong>Méthode:</strong> ${accessMethod}</p>
-                                <p><em>Si LoadBalancer est utilisé, l'IP peut prendre quelques minutes pour être assignée.</em></p>
+                                <a href="${env.APP_URL}" style="font-size: 16px; color: #0066cc; text-decoration: none; font-weight: bold;">${env.APP_URL}</a>
                             </div>
-                            
-                            <h3 style="color: #0056b3;">📈 Qualité du code:</h3>
-                            <ul>
-                                <li><strong>Rapport Backend SonarQube:</strong> <a href="${sonarBackendUrl}">Voir le rapport</a></li>
-                                ${env.FRONTEND_DIR != env.BACKEND_DIR ? '<li><strong>Rapport Frontend SonarQube:</strong> <a href="' + sonarFrontendUrl + '">Voir le rapport</a></li>' : ''}
-                            </ul>
-                            
-                            <h3 style="color: #0056b3;">☸️ État Kubernetes:</h3>
-                            <pre style="background-color: #f8f9fa; padding: 10px; border-radius: 3px; border: 1px solid #e9ecef; font-size: 12px;">${k8sStatus}</pre>
-                            
+                            """ : ""}
+
+                            ${env.LB_DNS != "non-défini" ? """
+                            <h3 style="color: #0056b3;">🌐 DNS du Load Balancer:</h3>
+                            <div style="background-color: #fff3cd; padding: 15px; border-radius: 5px; border: 1px solid #ffeaa7;">
+                                <a href="http://${env.LB_DNS}" style="font-size: 16px; color: #856404; text-decoration: none;">http://${env.LB_DNS}</a>
+                            </div>
+                            """ : ""}
+
+                            ${env.EC2_IP != "non-défini" ? """
+                            <h3 style="color: #0056b3;">🌐 IP de l'instance EC2:</h3>
+                            <div style="background-color: #f8f9fa; padding: 15px; border-radius: 5px; border: 1px solid #e9ecef;">
+                                <code style="font-size: 16px; color: #495057;">${env.EC2_IP}</code>
+                            </div>
+                            """ : ""}
+
                             <div style="background-color: #d4edda; color: #155724; padding: 12px; border-radius: 4px; border: 1px solid #c3e6cb; margin-top: 20px;">
-                                <strong>✅ Application déployée avec succès sur Kubernetes</strong>
+                                <strong>✅ Infrastructure AWS déployée avec succès avec Terraform</strong>
+                                <p style="margin: 5px 0 0 0; font-size: 14px;">${resourceCount} ressources gérées dans la région ${AWS_DEFAULT_REGION}</p>
                             </div>
-                            
+
                             <hr style="margin: 20px 0;">
-                            <p style="color: #6c757d; font-size: 12px;">Email envoyé automatiquement par Jenkins</p>
+                            <p style="color: #6c757d; font-size: 12px; text-align: center;">
+                                Email envoyé automatiquement par Jenkins - ${new Date().format("dd/MM/yyyy à HH:mm")}
+                            </p>
                         </div>
                         </body>
                         </html>
                         """
                         break
-                        
+
                     case 'FAILURE':
-                        emailSubject = "❌ ÉCHEC - Déploiement ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+                        emailSubject = "❌ ÉCHEC - Déploiement Terraform AWS ${env.JOB_NAME} #${env.BUILD_NUMBER}"
                         emailBody = """
                         <html>
                         <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
                         <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 5px;">
-                            <h2 style="color: #dc3545; border-bottom: 2px solid #dc3545; padding-bottom: 10px;">💥 Échec du Déploiement</h2>
-                            
-                            <p>Le pipeline <strong>${env.JOB_NAME}</strong> a échoué.</p>
-                            
-                            <h3 style="color: #0056b3;">📊 Détails de la build:</h3>
+                            <h2 style="color: #dc3545; border-bottom: 2px solid #dc3545; padding-bottom: 10px;">💥 Échec du Déploiement AWS</h2>
+
+                            <p>Le pipeline Terraform AWS <strong>${env.JOB_NAME}</strong> a échoué lors du build #${env.BUILD_NUMBER}.</p>
+
+                            <h3 style="color: #0056b3;">📋 Détails techniques:</h3>
                             <ul>
                                 <li><strong>Build:</strong> #${env.BUILD_NUMBER}</li>
                                 <li><strong>Job:</strong> ${env.JOB_NAME}</li>
                                 <li><strong>URL Jenkins:</strong> <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></li>
                                 <li><strong>Durée:</strong> ${buildDuration}</li>
-                                <li><strong>Date:</strong> ${new Date().format("dd/MM/yyyy à HH:mm")}</li>
-                                <li><strong>Namespace K8s:</strong> ${K8S_NAMESPACE}</li>
-                                <li><strong>Structure détectée:</strong> ${structureInfo}</li>
+                                <li><strong>Région AWS:</strong> ${AWS_DEFAULT_REGION}</li>
                             </ul>
-                            
-                            <h3 style="color: #0056b3;">🔍 État actuel Kubernetes:</h3>
-                            <pre style="background-color: #f8f9fa; padding: 10px; border-radius: 3px; border: 1px solid #e9ecef; font-size: 12px;">${k8sStatus}</pre>
-                            
-                            <div style="background-color: #f8d7da; color: #721c24; padding: 12px; border-radius: 4px; border: 1px solid #f5c6cb; margin-top: 20px;">
-                                <strong>❌ Une intervention est nécessaire - Consultez les logs Jenkins pour plus de détails</strong>
+
+                            <div style="background-color: #f8d7da; color: #721c24; padding: 15px; border-radius: 4px; border: 1px solid #f5c6cb; margin-top: 20px;">
+                                <strong>❌ Intervention nécessaire - Consultez les logs Jenkins pour plus de détails</strong>
+                                <p style="margin: 10px 0 0 0;"><a href="${env.BUILD_URL}console" style="color: #721c24; text-decoration: underline;">Accéder aux logs du build</a></p>
                             </div>
-                            
+
+                            <div style="background-color: #fff3cd; color: #856404; padding: 12px; border-radius: 4px; border: 1px solid #ffeaa7; margin-top: 15px;">
+                                <strong>💡 Actions recommandées:</strong>
+                                <ul style="margin: 10px 0 0 20px;">
+                                    <li>Vérifier les logs de build Jenkins</li>
+                                    <li>Contrôler les credentials AWS</li>
+                                    <li>Vérifier la configuration Terraform</li>
+                                    <li>S'assurer des permissions IAM</li>
+                                </ul>
+                            </div>
+
                             <hr style="margin: 20px 0;">
-                            <p style="color: #6c757d; font-size: 12px;">Email envoyé automatiquement par Jenkins</p>
+                            <p style="color: #6c757d; font-size: 12px; text-align: center;">
+                                Email envoyé automatiquement par Jenkins - ${new Date().format("dd/MM/yyyy à HH:mm")}
+                            </p>
+                        </div>
+                        </body>
+                        </html>
+                        """
+                        break
+
+                    case 'UNSTABLE':
+                        emailSubject = "⚠️ INSTABLE - Déploiement Terraform AWS ${env.JOB_NAME} #${env.BUILD_NUMBER}"
+                        emailBody = """
+                        <html>
+                        <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                        <div style="max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ffc107; border-radius: 5px;">
+                            <h2 style="color: #ffc107; border-bottom: 2px solid #ffc107; padding-bottom: 10px;">⚠️ Déploiement avec Avertissements</h2>
+
+                            <p>Le pipeline Terraform AWS <strong>${env.JOB_NAME}</strong> s'est terminé avec des avertissements.</p>
+
+                            <div style="background-color: #fff3cd; color: #856404; padding: 12px; border-radius: 4px; border: 1px solid #ffeaa7; margin-top: 15px;">
+                                <strong>L'infrastructure est déployée mais nécessite une attention.</strong>
+                            </div>
+
+                            <p><a href="${env.BUILD_URL}">Voir les détails du build</a></p>
                         </div>
                         </body>
                         </html>
                         """
                         break
                 }
-                
+
+                // Envoi de l'email
                 if (emailSubject && emailBody) {
                     emailext (
                         subject: emailSubject,
@@ -764,22 +403,69 @@ spec:
                         mimeType: "text/html"
                     )
                 }
+
+                // Nettoyage des fichiers temporaires
+                sh '''
+                    echo "🧹 Nettoyage des fichiers temporaires..."
+                    rm -f tfplan terraform.tfstate.backup 2>/dev/null || true
+                    rm -f terraform_state.txt infrastructure.png 2>/dev/null || true
+                '''
             }
         }
-        
+
         success {
-            echo '✅ Pipeline Kubernetes terminé avec succès!'
-            echo "🌐 Votre application est accessible à: ${env.APP_URL ?: 'http://localhost:8080'}"
+            echo '✅ Pipeline Terraform AWS terminé avec succès!'
+            script {
+                echo "🏗️ Infrastructure déployée avec Terraform"
+                echo "📊 ${resourceCount} ressources gérées dans ${AWS_DEFAULT_REGION}"
+
+                if (env.APP_URL != "non-défini" && env.APP_URL != "") {
+                    echo "🌐 Application déployée: ${env.APP_URL}"
+                }
+                if (env.LB_DNS != "non-défini" && env.LB_DNS != "") {
+                    echo "🌐 Load Balancer: http://${env.LB_DNS}"
+                }
+                if (env.EC2_IP != "non-défini" && env.EC2_IP != "") {
+                    echo "🌐 Instance EC2: ${env.EC2_IP}"
+                }
+            }
         }
-        
+
         failure {
-            echo '❌ Pipeline Kubernetes a échoué!'
-            echo '🔍 Consultez les logs pour plus de détails'
+            echo '❌ Pipeline Terraform AWS a échoué!'
+            echo '🔍 Consultez les logs Jenkins pour plus de détails'
+
+            // Nettoyage optionnel en cas d'échec
+            script {
+                echo "🗑️  Nettoyage de l'infrastructure en cas d'échec..."
+                withCredentials([[
+                    $class: 'AmazonWebServicesCredentialsBinding',
+                    credentialsId: "${AWS_CREDENTIALS_ID}",
+                    accessKeyVariable: 'AWS_ACCESS_KEY_ID',
+                    secretKeyVariable: 'AWS_SECRET_ACCESS_KEY'
+                ]]) {
+                    sh '''
+                        echo "🧨 Destruction de l'infrastructure suite à l'échec..."
+                        terraform destroy -auto-approve -var="environment=jenkins" -var="aws_region=${AWS_DEFAULT_REGION}" || echo "⚠️ Échec de la destruction"
+                    '''
+                }
+            }
         }
-        
+
         unstable {
-            echo '⚠️  Pipeline terminé avec statut instable (Quality Gate échouée)'
-            echo "🌐 Votre application est accessible à: ${env.APP_URL ?: 'http://localhost:8080'}"
+            echo '⚠️  Pipeline terminé avec statut instable'
+            echo '📋 Certains tests ou vérifications ont échoué'
+        }
+
+        cleanup {
+            echo "🧼 Nettoyage final de l'environnement"
+            sh '''
+                # Suppression des fichiers sensibles
+                rm -f .terraform.lock.hcl 2>/dev/null || true
+
+                # Nettoyage du workspace
+                find . -name "*.log" -delete 2>/dev/null || true
+            '''
         }
     }
 }
