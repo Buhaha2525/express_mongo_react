@@ -2,13 +2,10 @@ pipeline {
     agent any
 
     environment {
-        AWS_REGION = 'us-west-2'
+        AWS_REGION = 'us-west-2'  // Changé pour us-west-2 comme dans vos credentials
         PROJECT_NAME = 'fullstack-app'
         ENVIRONMENT = 'dev'
         TERRAFORM_DIR = 'terraform'
-        TF_VAR_backend_port = '5000'
-        TF_VAR_frontend_port = '3000'
-        TF_VAR_mongodb_port = '27017'
     }
 
     parameters {
@@ -17,170 +14,58 @@ pipeline {
             choices: ['plan', 'apply', 'destroy'],
             description: 'Action Terraform à exécuter'
         )
-        string(
-            name: 'TERRAFORM_VERSION',
-            defaultValue: '1.5.0',
-            description: 'Version de Terraform à utiliser'
-        )
         booleanParam(
             name: 'AUTO_APPROVE',
             defaultValue: false,
             description: 'Approuver automatiquement sans confirmation'
         )
-        booleanParam(
-            name: 'USE_SESSION_TOKEN',
-            defaultValue: false,
-            description: 'Utiliser AWS Session Token'
-        )
-    }
-
-    options {
-        timeout(time: 30, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '10'))
     }
 
     stages {
         stage('Checkout') {
             steps {
                 checkout scm
-                script {
-                    currentBuild.displayName = "#${currentBuild.number} - ${params.ACTION} - ${ENVIRONMENT}"
-                    currentBuild.description = "Terraform ${params.ACTION} for ${PROJECT_NAME}"
-                }
             }
         }
 
         stage('Setup AWS Credentials') {
             steps {
-                script {
-                    if (params.USE_SESSION_TOKEN) {
-                        // Avec Session Token
-                        withCredentials([
-                            string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                            string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
-                            string(credentialsId: 'aws-session-token', variable: 'AWS_SESSION_TOKEN')
-                        ]) {
-                            sh '''
-                            export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-                            export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-                            export AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
-                            export AWS_DEFAULT_REGION=${AWS_REGION}
-                            echo "🔐 Using AWS credentials with session token"
-                            aws sts get-caller-identity
-                            echo "✅ AWS credentials with token configured successfully"
-                            '''
-                        }
-                    } else {
-                        // Sans Session Token
-                        withCredentials([
-                            string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                            string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
-                        ]) {
-                            sh '''
-                            export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-                            export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-                            export AWS_DEFAULT_REGION=${AWS_REGION}
-                            echo "🔐 Using AWS credentials without session token"
-                            aws sts get-caller-identity
-                            echo "✅ AWS credentials configured successfully"
-                            '''
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('Setup Terraform') {
-            steps {
-                script {
-                    // Installation de Terraform
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                    string(credentialsId: 'aws-session-token', variable: 'AWS_SESSION_TOKEN')
+                ]) {
                     sh '''
-                    if ! command -v terraform &> /dev/null; then
-                        echo "📦 Installing Terraform ${params.TERRAFORM_VERSION}..."
-                        wget -q https://releases.hashicorp.com/terraform/${params.TERRAFORM_VERSION}/terraform_${params.TERRAFORM_VERSION}_linux_amd64.zip
-                        unzip -q terraform_${params.TERRAFORM_VERSION}_linux_amd64.zip
-                        sudo mv terraform /usr/local/bin/
-                        rm terraform_${params.TERRAFORM_VERSION}_linux_amd64.zip
-                    fi
-                    '''
+                    echo "🔐 Configuring AWS credentials with session token"
+                    export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+                    export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+                    export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
+                    export AWS_DEFAULT_REGION=us-west-2
 
-                    // Vérification de la version
-                    sh 'terraform version'
+                    echo "Testing AWS credentials..."
+                    aws sts get-caller-identity
+                    echo "✅ AWS credentials configured successfully"
+                    '''
                 }
             }
         }
 
         stage('Terraform Init') {
             steps {
-                script {
-                    if (params.USE_SESSION_TOKEN) {
-                        withCredentials([
-                            string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                            string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
-                            string(credentialsId: 'aws-session-token', variable: 'AWS_SESSION_TOKEN')
-                        ]) {
-                            dir('terraform') {
-                                sh '''
-                                export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-                                export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-                                export AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
-                                export AWS_DEFAULT_REGION=${AWS_REGION}
-                                terraform init -input=false -upgrade
-                                '''
-                            }
-                        }
-                    } else {
-                        withCredentials([
-                            string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                            string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
-                        ]) {
-                            dir('terraform') {
-                                sh """
-                                export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-                                export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-                                export AWS_DEFAULT_REGION=${AWS_REGION}
-                                terraform init -input=false -upgrade
-                                """
-                            }
-                        }
-                    }
-                }
-            }
-        }
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                    string(credentialsId: 'aws-session-token', variable: 'AWS_SESSION_TOKEN')
+                ]) {
+                    dir('terraform') {
+                        sh '''
+                        export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+                        export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+                        export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
+                        export AWS_DEFAULT_REGION=us-west-2
 
-        stage('Terraform Validate') {
-            steps {
-                script {
-                    if (params.USE_SESSION_TOKEN) {
-                        withCredentials([
-                            string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                            string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
-                            string(credentialsId: 'aws-session-token', variable: 'AWS_SESSION_TOKEN')
-                        ]) {
-                            dir('terraform') {
-                                sh """
-                                export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-                                export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-                                export AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
-                                export AWS_DEFAULT_REGION=${AWS_REGION}
-                                terraform validate
-                                """
-                            }
-                        }
-                    } else {
-                        withCredentials([
-                            string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                            string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
-                        ]) {
-                            dir('terraform') {
-                                sh """
-                                export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-                                export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-                                export AWS_DEFAULT_REGION=${AWS_REGION}
-                                terraform validate
-                                """
-                            }
-                        }
+                        terraform init -input=false
+                        '''
                     }
                 }
             }
@@ -191,59 +76,21 @@ pipeline {
                 expression { params.ACTION in ['plan', 'apply'] }
             }
             steps {
-                script {
-                    if (params.USE_SESSION_TOKEN) {
-                        withCredentials([
-                            string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                            string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
-                            string(credentialsId: 'aws-session-token', variable: 'AWS_SESSION_TOKEN')
-                        ]) {
-                            dir('terraform') {
-                                sh """
-                                export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-                                export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-                                export AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
-                                export AWS_DEFAULT_REGION=${AWS_REGION}
-                                terraform plan \
-                                    -var="aws_region=${AWS_REGION}" \
-                                    -var="project_name=${PROJECT_NAME}" \
-                                    -var="environment=${ENVIRONMENT}" \
-                                    -var="backend_port=${TF_VAR_backend_port}" \
-                                    -var="frontend_port=${TF_VAR_frontend_port}" \
-                                    -var="mongodb_port=${TF_VAR_mongodb_port}" \
-                                    -out=tfplan \
-                                    -input=false
-                                """
-                            }
-                        }
-                    } else {
-                        withCredentials([
-                            string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                            string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
-                        ]) {
-                            dir('terraform') {
-                                sh """
-                                export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-                                export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-                                export AWS_DEFAULT_REGION=${AWS_REGION}
-                                terraform plan \
-                                    -var="aws_region=${AWS_REGION}" \
-                                    -var="project_name=${PROJECT_NAME}" \
-                                    -var="environment=${ENVIRONMENT}" \
-                                    -var="backend_port=${TF_VAR_backend_port}" \
-                                    -var="frontend_port=${TF_VAR_frontend_port}" \
-                                    -var="mongodb_port=${TF_VAR_mongodb_port}" \
-                                    -out=tfplan \
-                                    -input=false
-                                """
-                            }
-                        }
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                    string(credentialsId: 'aws-session-token', variable: 'AWS_SESSION_TOKEN')
+                ]) {
+                    dir('terraform') {
+                        sh '''
+                        export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+                        export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+                        export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
+                        export AWS_DEFAULT_REGION=us-west-2
+
+                        terraform plan -out=tfplan -input=false
+                        '''
                     }
-                }
-            }
-            post {
-                success {
-                    archiveArtifacts artifacts: 'terraform/tfplan', fingerprint: true
                 }
             }
         }
@@ -253,135 +100,54 @@ pipeline {
                 expression { params.ACTION == 'apply' }
             }
             steps {
-                script {
-                    if (params.USE_SESSION_TOKEN) {
-                        withCredentials([
-                            string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                            string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
-                            string(credentialsId: 'aws-session-token', variable: 'AWS_SESSION_TOKEN')
-                        ]) {
-                            if (params.AUTO_APPROVE) {
-                                dir('terraform') {
-                                    sh """
-                                    export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-                                    export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-                                    export AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
-                                    export AWS_DEFAULT_REGION=${AWS_REGION}
-                                    terraform apply \
-                                        -var="aws_region=${AWS_REGION}" \
-                                        -var="project_name=${PROJECT_NAME}" \
-                                        -var="environment=${ENVIRONMENT}" \
-                                        -var="backend_port=${TF_VAR_backend_port}" \
-                                        -var="frontend_port=${TF_VAR_frontend_port}" \
-                                        -var="mongodb_port=${TF_VAR_mongodb_port}" \
-                                        -auto-approve \
-                                        -input=false
-                                    """
-                                }
-                            } else {
-                                input message: 'Appliquer les changements Terraform?',
-                                      ok: 'Apply',
-                                      parameters: [booleanParam(name: 'CONFIRM_APPLY', defaultValue: false)]
-                                dir('terraform') {
-                                    sh """
-                                    export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-                                    export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-                                    export AWS_SESSION_TOKEN=${AWS_SESSION_TOKEN}
-                                    export AWS_DEFAULT_REGION=${AWS_REGION}
-                                    terraform apply \
-                                        -var="aws_region=${AWS_REGION}" \
-                                        -var="project_name=${PROJECT_NAME}" \
-                                        -var="environment=${ENVIRONMENT}" \
-                                        -var="backend_port=${TF_VAR_backend_port}" \
-                                        -var="frontend_port=${TF_VAR_frontend_port}" \
-                                        -var="mongodb_port=${TF_VAR_mongodb_port}" \
-                                        -auto-approve \
-                                        -input=false
-                                    """
-                                }
+                withCredentials([
+                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
+                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
+                    string(credentialsId: 'aws-session-token', variable: 'AWS_SESSION_TOKEN')
+                ]) {
+                    script {
+                        if (params.AUTO_APPROVE) {
+                            dir('terraform') {
+                                sh '''
+                                export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+                                export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+                                export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
+                                export AWS_DEFAULT_REGION=us-west-2
+
+                                terraform apply -auto-approve -input=false
+                                '''
                             }
-                        }
-                    } else {
-                        withCredentials([
-                            string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                            string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY')
-                        ]) {
-                            if (params.AUTO_APPROVE) {
-                                dir('terraform') {
-                                    sh """
-                                    export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-                                    export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-                                    export AWS_DEFAULT_REGION=${AWS_REGION}
-                                    terraform apply \
-                                        -var="aws_region=${AWS_REGION}" \
-                                        -var="project_name=${PROJECT_NAME}" \
-                                        -var="environment=${ENVIRONMENT}" \
-                                        -var="backend_port=${TF_VAR_backend_port}" \
-                                        -var="frontend_port=${TF_VAR_frontend_port}" \
-                                        -var="mongodb_port=${TF_VAR_mongodb_port}" \
-                                        -auto-approve \
-                                        -input=false
-                                    """
-                                }
-                            } else {
-                                input message: 'Appliquer les changements Terraform?',
-                                      ok: 'Apply',
-                                      parameters: [booleanParam(name: 'CONFIRM_APPLY', defaultValue: false)]
-                                dir('terraform') {
-                                    sh """
-                                    export AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
-                                    export AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
-                                    export AWS_DEFAULT_REGION=${AWS_REGION}
-                                    terraform apply \
-                                        -var="aws_region=${AWS_REGION}" \
-                                        -var="project_name=${PROJECT_NAME}" \
-                                        -var="environment=${ENVIRONMENT}" \
-                                        -var="backend_port=${TF_VAR_backend_port}" \
-                                        -var="frontend_port=${TF_VAR_frontend_port}" \
-                                        -var="mongodb_port=${TF_VAR_mongodb_port}" \
-                                        -auto-approve \
-                                        -input=false
-                                    """
-                                }
+                        } else {
+                            input message: 'Appliquer les changements Terraform?',
+                                  ok: 'Apply'
+                            dir('terraform') {
+                                sh '''
+                                export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+                                export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+                                export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
+                                export AWS_DEFAULT_REGION=us-west-2
+
+                                terraform apply -auto-approve -input=false
+                                '''
                             }
                         }
                     }
                 }
             }
         }
-
-        // Les autres stages restent similaires avec la gestion du token...
     }
 
     post {
         always {
-            // Nettoyage
-            sh 'rm -rf terraform/.terraform terraform/tfplan terraform/terraform.tfstate.backup || true'
+            sh 'rm -rf terraform/.terraform* terraform/tfplan || true'
         }
 
         success {
-            script {
-                if (params.ACTION == 'apply') {
-                    // Email de succès...
-                }
-            }
+            echo "✅ Pipeline executed successfully"
         }
 
         failure {
-            emailext (
-                subject: "❌ Terraform Deployment Failed - ${PROJECT_NAME}",
-                body: """
-                <h2>❌ Échec du Déploiement Terraform</h2>
-                <p><strong>Projet:</strong> ${PROJECT_NAME}</p>
-                <p><strong>Environnement:</strong> ${ENVIRONMENT}</p>
-                <p><strong>Build:</strong> ${currentBuild.number}</p>
-                <p><strong>Action:</strong> ${params.ACTION}</p>
-                <p><strong>Session Token utilisé:</strong> ${params.USE_SESSION_TOKEN}</p>
-                <br>
-                <p>Veuillez consulter les logs du build pour plus de détails.</p>
-                """,
-                to: '${DEFAULT_RECIPIENTS}'
-            )
+            echo "❌ Pipeline failed"
         }
     }
 }
