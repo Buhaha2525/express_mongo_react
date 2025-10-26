@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        AWS_REGION = 'us-east-1'
+        AWS_REGION = 'us-west-1'
         PROJECT_NAME = 'fullstack-app'
         ENVIRONMENT = 'dev'
         TERRAFORM_DIR = 'terraform'
