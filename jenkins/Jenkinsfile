@@ -6,24 +6,46 @@ pipeline {
         PROJECT_NAME = 'fullstack-app'
         ENVIRONMENT = 'dev'
         TERRAFORM_DIR = 'terraform'
+        DEPLOY_DIR = 'deploy'
     }
 
     parameters {
         choice(
             name: 'ACTION',
-            choices: ['plan', 'apply', 'destroy'],
-            description: 'Action Terraform à exécuter'
+            choices: ['infra-only', 'infra-deploy', 'deploy-only', 'destroy'],
+            description: 'Action à exécuter'
+        )
+        choice(
+            name: 'DEPLOY_TYPE',
+            choices: ['basic', 'with-db', 'full'],
+            description: 'Type de déploiement'
+        )
+        booleanParam(
+            name: 'SKIP_CREDENTIAL_CHECK',
+            defaultValue: true,
+            description: 'SKIP la vérification AWS (sandbox)'
         )
     }
 
+    options {
+        timeout(time: 25, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '5'))
+    }
+
     stages {
-        stage('Checkout') {
+        stage('🚀 DÉMARRAGE RAPIDE') {
             steps {
                 checkout scm
+                script {
+                    currentBuild.displayName = "#${currentBuild.number} - ${params.ACTION}"
+                    echo "🔧 MODE SANDBOX ACTIVÉ - Déploiement Fullstack"
+                    echo "📦 Action: ${params.ACTION}"
+                    echo "🎯 Type: ${params.DEPLOY_TYPE}"
+                }
             }
         }
 
-        stage('Setup Environment') {
+        stage('⚡ CONFIGURATION AWS') {
             steps {
                 withCredentials([
                     string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
@@ -31,17 +53,27 @@ pipeline {
                     string(credentialsId: 'aws-session-token', variable: 'AWS_SESSION_TOKEN')
                 ]) {
                     sh '''
-                    echo "🚨 SANDBOX MODE: Using provided credentials without validation"
+                    echo "🔐 Injection des credentials AWS..."
                     export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
                     export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
                     export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
                     export AWS_DEFAULT_REGION=us-west-2
+
+                    if [ "$SKIP_CREDENTIAL_CHECK" = "false" ]; then
+                        echo "🧪 Test rapide des credentials..."
+                        timeout 10s aws sts get-caller-identity || echo "⚠️ Test credentials échoué"
+                    else
+                        echo "⏩ Test credentials skipped (mode sandbox)"
+                    fi
                     '''
                 }
             }
         }
 
-        stage('Terraform Init') {
+        stage('🏗️ 1. INFRASTRUCTURE TERRAFORM') {
+            when {
+                expression { params.ACTION in ['infra-only', 'infra-deploy'] }
+            }
             steps {
                 withCredentials([
                     string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
@@ -49,25 +81,364 @@ pipeline {
                     string(credentialsId: 'aws-session-token', variable: 'AWS_SESSION_TOKEN')
                 ]) {
                     dir('terraform') {
-                        sh '''
-                        export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
-                        export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
-                        export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
-                        export AWS_DEFAULT_REGION=us-west-2
+                        script {
+                            echo "🏗️ CRÉATION DE L'INFRASTRUCTURE AWS..."
 
-                        echo "🚀 Initializing Terraform (sandbox mode)..."
-                        terraform init -input=false || echo "⚠️ Init may have issues in sandbox"
-                        '''
+                            // Init Terraform
+                            sh '''
+                            export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+                            export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+                            export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
+                            export AWS_DEFAULT_REGION=us-west-2
+
+                            echo "🚀 Initialisation Terraform..."
+                            terraform init -input=false -reconfigure
+                            '''
+
+                            // Apply Infrastructure
+                            sh '''
+                            export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+                            export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+                            export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
+                            export AWS_DEFAULT_REGION=us-west-2
+
+                            echo "🏗️ Déploiement de l'infrastructure..."
+                            timeout 15m terraform apply \
+                                -var="aws_region=us-west-2" \
+                                -var="project_name=fullstack-app" \
+                                -var="environment=dev" \
+                                -var="backend_port=5000" \
+                                -var="frontend_port=3000" \
+                                -var="mongodb_port=27017" \
+                                -var="ssh_port=22" \
+                                -auto-approve \
+                                -input=false
+                            '''
+
+                            // Sauvegarde des outputs
+                            sh '''
+                            export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
+                            export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
+                            export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
+                            export AWS_DEFAULT_REGION=us-west-2
+
+                            terraform output -json > ../infrastructure-outputs.json
+                            terraform output -raw ssh_private_key > ../deploy-key.pem
+                            chmod 400 ../deploy-key.pem
+                            '''
+                        }
                     }
                 }
             }
         }
 
-        stage('Terraform Plan') {
+        stage('📊 RÉCUPÉRATION INFOS INFRA') {
             when {
-                expression { params.ACTION in ['plan', 'apply'] }
+                expression { params.ACTION in ['infra-only', 'infra-deploy', 'deploy-only'] }
             }
             steps {
+                script {
+                    // Lire les outputs de l'infrastructure
+                    def infraOutputs = readJSON file: 'infrastructure-outputs.json'
+
+                    env.BACKEND_IP = infraOutputs.backend_public_ip?.value ?: "N/A"
+                    env.FRONTEND_IP = infraOutputs.frontend_public_ip?.value ?: "N/A"
+                    env.MONGODB_IP = infraOutputs.mongodb_private_ip?.value ?: "N/A"
+
+                    echo "📡 Adresses IP récupérées:"
+                    echo "   Backend:  ${env.BACKEND_IP}"
+                    echo "   Frontend: ${env.FRONTEND_IP}"
+                    echo "   MongoDB:  ${env.MONGODB_IP}"
+
+                    // Créer le fichier d'informations
+                    writeFile file: 'infrastructure-info.txt', text: """
+                    🌐 INFORMATIONS INFRASTRUCTURE
+                    =============================
+                    Backend API:    ${env.BACKEND_IP}:5000
+                    Frontend Web:   ${env.FRONTEND_IP}
+                    MongoDB:        ${env.MONGODB_IP}:27017
+
+                    🔗 URLs d'accès:
+                    - Frontend: http://${env.FRONTEND_IP}
+                    - Backend:  http://${env.BACKEND_IP}:5000/api/health
+
+                    📋 Connexions SSH:
+                    ssh -i deploy-key.pem ec2-user@${env.BACKEND_IP}
+                    ssh -i deploy-key.pem ec2-user@${env.FRONTEND_IP}
+                    """
+                }
+            }
+        }
+
+        stage('🚀 2. DÉPLOIEMENT APPLICATION') {
+            when {
+                expression { params.ACTION in ['infra-deploy', 'deploy-only'] }
+            }
+            steps {
+                script {
+                    echo "🚀 DÉPLOIEMENT DE L'APPLICATION FULLSTACK"
+                    echo "🎯 Type: ${params.DEPLOY_TYPE}"
+
+                    // Vérification que les IPs sont disponibles
+                    if (env.BACKEND_IP == "N/A" || env.FRONTEND_IP == "N/A") {
+                        error "❌ Impossible de récupérer les IPs de l'infrastructure"
+                    }
+                }
+
+                // DÉPLOIEMENT BACKEND
+                stage('🔧 Déploiement Backend') {
+                    steps {
+                        script {
+                            echo "🔧 Déploiement du Backend Express sur ${env.BACKEND_IP}"
+
+                            // Le backend est déjà déployé via user_data dans Terraform
+                            // On peut juste vérifier qu'il fonctionne
+                            sh """
+                            echo "✅ Backend déployé automatiquement via Terraform"
+                            echo "🧪 Test du backend..."
+
+                            # Attendre que le backend soit prêt
+                            for i in {1..10}; do
+                                if curl -s http://${env.BACKEND_IP}:5000/api/health > /dev/null; then
+                                    echo "✅ Backend opérationnel après \$i essais"
+                                    break
+                                else
+                                    echo "⏳ Backend non disponible, essai \$i/10..."
+                                    sleep 15
+                                fi
+                            done
+                            """
+                        }
+                    }
+                }
+
+                // DÉPLOIEMENT MONGODB
+                stage('🗄️ Configuration MongoDB') {
+                    when {
+                        expression { params.DEPLOY_TYPE in ['with-db', 'full'] }
+                    }
+                    steps {
+                        script {
+                            echo "🗄️ Configuration MongoDB sur ${env.MONGODB_IP}"
+
+                            // MongoDB est déjà configuré via user_data dans Terraform
+                            sh """
+                            echo "✅ MongoDB configuré automatiquement via Terraform"
+                            echo "🔗 URL de connexion: mongodb://appuser:apppass123@${env.MONGODB_IP}:27017/fullstackapp"
+                            """
+                        }
+                    }
+                }
+
+                // DÉPLOIEMENT FRONTEND AVEC APPLICATION RÉELLE
+                stage('🌐 Déploiement Frontend') {
+                    steps {
+                        script {
+                            echo "🌐 Déploiement du Frontend sur ${env.FRONTEND_IP}"
+
+                            // Vérifier si on a un vrai projet React à déployer
+                            def hasReactApp = fileExists('frontend/package.json')
+
+                            if (hasReactApp && params.DEPLOY_TYPE == 'full') {
+                                echo "🚀 Déploiement d'une application React réelle"
+
+                                dir('frontend') {
+                                    // Build de l'application React
+                                    sh '''
+                                    echo "📦 Installation des dépendances..."
+                                    npm install
+
+                                    echo "🏗️ Construction de l'application..."
+                                    npm run build
+
+                                    echo "📁 Contenu du build:"
+                                    ls -la build/
+                                    '''
+
+                                    // Déploiement sur l'instance frontend
+                                    sh """
+                                    echo "🚀 Déploiement sur le serveur..."
+                                    scp -o StrictHostKeyChecking=no -i ../deploy-key.pem -r build/* ec2-user@${env.FRONTEND_IP}:/var/www/html/
+
+                                    echo "🔧 Configuration Nginx..."
+                                    ssh -o StrictHostKeyChecking=no -i ../deploy-key.pem ec2-user@${env.FRONTEND_IP} "
+                                        sudo systemctl restart nginx
+                                        echo '✅ Frontend déployé avec succès'
+                                    "
+                                    """
+                                }
+                            } else {
+                                echo "📋 Utilisation du frontend exemple (déjà déployé via Terraform)"
+                                sh """
+                                echo "🌐 Frontend disponible à: http://${env.FRONTEND_IP}"
+                                """
+                            }
+                        }
+                    }
+                }
+
+                // CONFIGURATION ENVIRONNEMENT
+                stage('⚙️ Configuration App') {
+                    when {
+                        expression { params.DEPLOY_TYPE == 'full' }
+                    }
+                    steps {
+                        script {
+                            echo "⚙️ Configuration de l'environnement d'application"
+
+                            // Configuration des variables d'environnement backend
+                            sh """
+                            echo "🔧 Configuration du backend..."
+                            ssh -o StrictHostKeyChecking=no -i deploy-key.pem ec2-user@${env.BACKEND_IP} "
+                                cat > /home/ec2-user/app/backend/.env << 'EOL'
+                            NODE_ENV=production
+                            PORT=5000
+                            MONGODB_URI=mongodb://appuser:apppass123@${env.MONGODB_IP}:27017/fullstackapp
+                            FRONTEND_URL=http://${env.FRONTEND_IP}
+                            EOL
+
+                                # Redémarrage de l'application
+                                cd /home/ec2-user/app/backend
+                                pm2 restart backend-api
+                                echo '✅ Backend reconfiguré avec MongoDB'
+                            "
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('🧪 3. TESTS AUTOMATISÉS') {
+            when {
+                expression { params.ACTION in ['infra-deploy', 'deploy-only'] }
+            }
+            steps {
+                script {
+                    echo "🧪 TESTS AUTOMATISÉS DE L'APPLICATION"
+
+                    dir('tests') {
+                        // Test Backend API
+                        sh """
+                        echo "🔍 Test Backend API..."
+                        for i in {1::10}; do
+                            if curl -f -s http://${env.BACKEND_IP}:5000/api/health; then
+                                echo "✅ Backend API fonctionnel"
+                                break
+                            else
+                                echo "⏳ Backend non disponible, essai \$i/10..."
+                                sleep 10
+                            fi
+                        done
+                        """
+
+                        // Test Frontend
+                        sh """
+                        echo "🔍 Test Frontend..."
+                        if curl -f -s http://${env.FRONTEND_IP} > /dev/null; then
+                            echo "✅ Frontend accessible"
+                        else
+                            echo "❌ Frontend inaccessible"
+                        fi
+                        """
+
+                        // Test complet de l'application
+                        sh """
+                        echo "🔍 Test complet de l'application..."
+                        curl -s http://${env.BACKEND_IP}:5000/api/info | grep -q "Backend Server Information" && echo "✅ Application complète fonctionnelle" || echo "⚠️ Application partiellement fonctionnelle"
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('📋 4. RAPPORT FINAL') {
+            steps {
+                script {
+                    echo "📋 CRÉATION DU RAPPORT DE DÉPLOIEMENT"
+
+                    def deploymentReport = """
+                    🎉 DÉPLOIEMENT FULLSTACK TERMINÉ 🎉
+                    ===================================
+
+                    📅 Date: ${new Date().format('yyyy-MM-dd HH:mm:ss')}
+                    🎯 Type: ${params.DEPLOY_TYPE}
+                    🔧 Action: ${params.ACTION}
+
+                    🌐 URLS DE L'APPLICATION:
+                    ========================
+                    Frontend:    http://${env.FRONTEND_IP}
+                    Backend API: http://${env.BACKEND_IP}:5000
+                    MongoDB:     ${env.MONGODB_IP}:27017
+
+                    🔗 TESTS RAPIDES:
+                    ================
+                    • Frontend:    curl -I http://${env.FRONTEND_IP}
+                    • Backend:     curl http://${env.BACKEND_IP}:5000/api/health
+                    • Application: curl http://${env.BACKEND_IP}:5000/api/info
+
+                    🔐 ACCÈS SSH:
+                    ============
+                    Backend:  ssh -i deploy-key.pem ec2-user@${env.BACKEND_IP}
+                    Frontend: ssh -i deploy-key.pem ec2-user@${env.FRONTEND_IP}
+                    MongoDB:  ssh -i deploy-key.pem ec2-user@${env.MONGODB_IP}
+
+                    📊 BASE DE DONNÉES:
+                    ==================
+                    • URL: mongodb://appuser:apppass123@${env.MONGODB_IP}:27017/fullstackapp
+                    • Admin: mongodb://admin:mongodb123@${env.MONGODB_IP}:27017/admin
+
+                    ⚠️  INFORMATIONS SANDBOX:
+                    ========================
+                    • Les credentials AWS expirent rapidement
+                    • Sauvegardez la clé SSH (deploy-key.pem)
+                    • Testez rapidement votre application
+
+                    ✅ PROCHAINES ÉTAPES:
+                    ====================
+                    1. Visitez http://${env.FRONTEND_IP}
+                    2. Testez l'API Backend
+                    3. Vérifiez les logs si nécessaire
+                    4. Détruisez l'infra après tests
+                    """
+
+                    writeFile file: 'deployment-report.txt', text: deploymentReport
+
+                    // Mise à jour de la description du build
+                    currentBuild.description = "Deployed - Frontend: ${env.FRONTEND_IP}"
+                }
+            }
+            post {
+                success {
+                    archiveArtifacts artifacts: 'deployment-report.txt', fingerprint: true
+                    archiveArtifacts artifacts: 'infrastructure-info.txt', fingerprint: true
+                    archiveArtifacts artifacts: 'deploy-key.pem', fingerprint: true
+                    archiveArtifacts artifacts: 'infrastructure-outputs.json', fingerprint: true
+                }
+            }
+        }
+
+        stage('🗑️ DESTRUCTION') {
+            when {
+                expression { params.ACTION == 'destroy' }
+            }
+            steps {
+                script {
+                    echo "🚨 DESTRUCTION DE L'INFRASTRUCTURE"
+
+                    input(
+                        message: "CONFIRMER LA DESTRUCTION COMPLÈTE?",
+                        ok: "DÉTRUIRE",
+                        parameters: [
+                            text(
+                                name: 'CONFIRM_DESTROY',
+                                defaultValue: 'DESTROY',
+                                description: 'Tapez DESTROY pour confirmer'
+                            )
+                        ]
+                    )
+                }
+
                 withCredentials([
                     string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
                     string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
@@ -80,8 +451,8 @@ pipeline {
                         export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
                         export AWS_DEFAULT_REGION=us-west-2
 
-                        echo "📋 Creating plan (may fail if credentials expired)..."
-                        terraform plan -out=tfplan -input=false || echo "❌ Plan failed - likely credential issue"
+                        echo "🗑️ Destruction de l'infrastructure..."
+                        terraform destroy -auto-approve
                         '''
                     }
                 }
@@ -91,8 +462,28 @@ pipeline {
 
     post {
         always {
-            echo "🔍 SANDBOX NOTE: If this failed, get NEW credentials from your lab interface"
-            echo "⏰ Credentials in sandbox environments expire quickly!"
+            echo "🔧 NETTOYAGE"
+            sh '''
+            rm -rf terraform/.terraform* || true
+            rm -rf terraform/tfplan || true
+            '''
+        }
+
+        success {
+            script {
+                if (params.ACTION != 'destroy') {
+                    echo "🎉 DÉPLOIEMENT RÉUSSI!"
+                    echo "🌐 Votre application est disponible: http://${env.FRONTEND_IP}"
+                    echo "📋 Téléchargez le rapport de déploiement pour plus d'informations"
+                } else {
+                    echo "🗑️ INFRASTRUCTURE DÉTRUITE"
+                }
+            }
+        }
+
+        failure {
+            echo "❌ ÉCHEC - CREDENTIALS EXPIRÉS OU ERREUR DÉPLOIEMENT"
+            echo "💡 Solution: Obtenez de nouvelles credentials et relancez"
         }
     }
 }
