@@ -1,0 +1,34 @@
+---
+- name: Déployer l'application Express + MongoDB + React
+  hosts: local
+  vars_files:
+    - group_vars/all.yml
+
+  tasks:
+    - name: Déterminer si on utilise become
+      set_fact:
+        use_become: "{{ ansible_os_family != 'Darwin' }}"
+
+    - name: Inclure le rôle de prérequis
+      include_role:
+        name: prerequisites
+
+    - name: Inclure le rôle MongoDB
+      include_role:
+        name: mongodb
+
+    - name: Inclure le rôle Backend
+      include_role:
+        name: back-end
+
+    - name: Inclure le rôle Frontend
+      include_role:
+        name: front-end
+
+    - name: Afficher les informations de déploiement
+      debug:
+        msg:
+          - "Application déployée avec succès !"
+          - "Backend: http://localhost:{{ back_end_port }}"
+          - "Frontend: http://localhost:{{ front_end_port }}"
+          - "MongoDB: port {{ mongo_port }}"

@@ -1,0 +1,45 @@
+---
+- name: Créer le répertoire de l'application
+  file:
+    path: "{{ back_end_path }}"
+    state: directory
+    owner: "{{ ansible_user_id }}"
+    group: staff
+    mode: '0755'
+
+- name: Copier les fichiers du backend
+  copy:
+    src: "../../back-end/"
+    dest: "{{ back_end_path }}"
+    owner: "{{ ansible_user_id }}"
+    group: staff
+
+- name: Créer le fichier .env pour le backend
+  template:
+    src: backend.env.j2
+    dest: "{{ back_end_path }}/.env"
+    owner: "{{ ansible_user_id }}"
+    group: staff
+    mode: '0644'
+
+- name: Installer les dépendances du backend
+  npm:
+    path: "{{ back_end_path }}"
+    production: yes
+
+- name: Démarrer l'application backend
+  command: "npm start"
+  args:
+    chdir: "{{ back_end_path }}"
+  async: 45
+  poll: 0
+
+- name: Attendre que le backend soit démarré
+  wait_for:
+    port: "{{ back_end_port }}"
+    delay: 5
+    timeout: 30
+
+- name: Afficher le message de succès backend
+  debug:
+    msg: "✅ Backend démarré sur le port {{ back_end_port }}"

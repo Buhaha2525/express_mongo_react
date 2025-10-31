@@ -1,0 +1,60 @@
+---
+- name: Créer le répertoire du frontend
+  file:
+    path: "{{ front_end_path }}"
+    state: directory
+    owner: "{{ ansible_user_id }}"
+    group: staff
+    mode: '0755'
+
+- name: Copier les fichiers du frontend
+  copy:
+    src: "../../front-end/"
+    dest: "{{ front_end_path }}"
+    owner: "{{ ansible_user_id }}"
+    group: staff
+
+- name: Créer le fichier .env pour le frontend
+  template:
+    src: frontend.env.j2
+    dest: "{{ front_end_path }}/.env"
+    owner: "{{ ansible_user_id }}"
+    group: staff
+    mode: '0644'
+
+- name: Installer les dépendances du frontend
+  npm:
+    path: "{{ front_end_path }}"
+
+- name: Build de l'application frontend avec npm run build
+  command: "npm run build"
+  args:
+    chdir: "{{ front_end_path }}"
+
+- name: Vérifier que le build a réussi
+  stat:
+    path: "{{ front_end_path }}/dist"
+  register: dist_folder
+
+- name: Démarrer le serveur de développement frontend
+  command: "npm run {{ npm_run_command }}"
+  args:
+    chdir: "{{ front_end_path }}"
+  async: 45
+  poll: 0
+  when: npm_run_command != "build" and dist_folder.stat.exists
+
+- name: Servir les fichiers statiques (si build)
+  command: "npx serve -s dist -p {{ front_end_port }}"
+  args:
+    chdir: "{{ front_end_path }}"
+  async: 45
+  poll: 0
+  when: npm_run_command == "build" and dist_folder.stat.exists
+
+- name: Attendre que le frontend soit accessible
+  wait_for:
+    port: "{{ front_end_port }}"
+    delay: 5
+    timeout: 30
+  ignore_errors: yes

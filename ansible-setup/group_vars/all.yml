@@ -1,0 +1,22 @@
+---
+# Variables de l'application
+app_name: "express-mongo-react"
+project_path: "{{ ansible_user_dir }}/Documents/express-mongo-react"
+back_end_path: "{{ project_path }}/back-end"
+front_end_path: "{{ project_path }}/front-end"
+
+# Variables MongoDB
+mongo_db_name: "smartphoneDB"
+mongo_port: 27017
+
+# Variables Backend
+node_version: "18"
+back_end_port: 5000
+back_end_host: "0.0.0.0"
+
+# Variables Frontend
+front_end_port: 3000
+npm_run_command: "dev"
+
+# Chemins spécifiques macOS
+mongo_data_path_macos: "/usr/local/var/mongodb"

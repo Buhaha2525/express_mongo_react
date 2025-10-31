@@ -1,0 +1,30 @@
+---
+- name: Vérifier si MongoDB est en cours d'exécution
+  command: brew services list | grep mongodb-community
+  register: mongo_status
+  changed_when: false
+  ignore_errors: yes
+  when: ansible_os_family == "Darwin"
+
+- name: Démarrer MongoDB si nécessaire
+  community.general.launchd:
+    name: homebrew.mxcl.mongodb-community
+    state: started
+  when: ansible_os_family == "Darwin" and "started" not in mongo_status.stdout
+
+- name: Attendre que MongoDB soit démarré
+  wait_for:
+    port: "{{ mongo_port }}"
+    delay: 5
+    timeout: 30
+
+- name: Vérifier la connexion à MongoDB
+  command: mongo --eval "db.adminCommand('ismaster')"
+  register: mongo_connection
+  changed_when: false
+  ignore_errors: yes
+
+- name: Afficher le statut MongoDB
+  debug:
+    msg: "MongoDB est démarré et accessible sur le port {{ mongo_port }}"
+  when: mongo_connection.rc == 0

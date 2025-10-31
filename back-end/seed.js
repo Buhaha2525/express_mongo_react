@@ -1,4 +1,33 @@
-const smartphonesData = [
+const mongoose = require('mongoose');
+
+// Modèle Smartphone (doit correspondre à votre modèle existant)
+const smartphoneSchema = new mongoose.Schema({
+  marque: String,
+  modele: String,
+  prix: Number,
+  stock: Number,
+  couleur: String,
+  image: String,
+  ecran: {
+    taille: Number,
+    resolution: String,
+    type: String
+  },
+  ram: Number,
+  stockage: Number,
+  camera: {
+    principale: Number,
+    frontale: Number
+  },
+  batterie: Number,
+  os: String,
+  processeur: String,
+  enPromotion: Boolean,
+  promotionPourcentage: Number
+});
+
+const Smartphone = mongoose.model('Smartphone', smartphoneSchema);
+const smartphoneDB = [
   {
     marque: 'Samsung',
     modele: 'Galaxy S23 Ultra',
@@ -84,3 +113,35 @@ const smartphonesData = [
   },
   // ... ajoutez d'autres smartphones avec des images
 ];
+
+// Connexion et insertion
+async function seedDatabase() {
+  try {
+    // Connexion à MongoDB
+    await mongoose.connect('mongodb://localhost:27017/smartphoneDB', {
+      useNewUrlParser: true,
+      useUnifiedTopology: true,
+    });
+    console.log('✅ Connecté à MongoDB');
+
+    // Vider la collection existante
+    await Smartphone.deleteMany({});
+    console.log('✅ Collection smartphones vidée');
+
+    // Insérer les nouveaux smartphones
+    await Smartphone.insertMany(smartphoneDB);
+    console.log('✅ Données insérées avec succès');
+
+    // Compter le nombre de documents
+    const count = await Smartphone.countDocuments();
+    console.log(`📱 ${count} smartphones insérés dans la base de données`);
+
+    process.exit(0);
+  } catch (error) {
+    console.error('❌ Erreur lors du seed:', error);
+    process.exit(1);
+  }
+}
+
+// Démarrer le seed
+seedDatabase();

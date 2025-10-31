@@ -1,0 +1,59 @@
+---
+- name: Détecter le système d'exploitation
+  debug:
+    msg: "Système détecté : {{ ansible_os_family }} - {{ ansible_distribution }}"
+  changed_when: false
+
+- name: Mettre à jour Homebrew (macOS)
+  homebrew:
+    update_homebrew: yes
+  when: ansible_os_family == "Darwin"
+
+- name: Ajouter le tap MongoDB (macOS)
+  homebrew_tap:
+    name: mongodb/brew
+    state: present
+  when: ansible_os_family == "Darwin"
+
+- name: Installer les paquets système nécessaires (macOS)
+  homebrew:
+    name:
+      - curl
+      - git
+      - node
+    state: present
+  when: ansible_os_family == "Darwin"
+
+- name: Installer MongoDB (macOS)
+  homebrew:
+    name: mongodb-community
+    state: present
+  when: ansible_os_family == "Darwin"
+
+- name: Mettre à jour le cache des paquets (Linux Debian/Ubuntu)
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+  when: ansible_os_family == "Debian"
+  become: yes
+
+- name: Installer les paquets système nécessaires (Linux Debian/Ubuntu)
+  apt:
+    name:
+      - curl
+      - gnupg
+      - ca-certificates
+      - git
+      - build-essential
+    state: present
+  when: ansible_os_family == "Debian"
+  become: yes
+
+- name: Vérifier la version de Node.js
+  command: node --version
+  register: node_version_result
+  changed_when: false
+
+- name: Afficher la version de Node.js
+  debug:
+    var: node_version_result.stdout
