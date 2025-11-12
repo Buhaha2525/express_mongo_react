@@ -16,6 +16,7 @@ COPY . .
 
 # Expose le port utilisé par l'application
 EXPOSE 5001
+EXPOSE 5002
 
 # Définit la variable d'environnement pour NODE_ENV
 ENV NODE_ENV=production

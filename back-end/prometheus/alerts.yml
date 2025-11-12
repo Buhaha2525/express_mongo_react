@@ -1,0 +1,20 @@
+# back-end/prometheus/alerts.yml
+groups:
+  - name: backend_alerts
+    rules:
+      - alert: HighErrorRate
+        expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High error rate on {{ $labels.instance }}"
+          description: "Error rate is above 10% for more than 2 minutes"
+
+      - alert: ServiceDown
+        expr: up{job="nodejs-backend"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Backend service down on {{ $labels.instance }}"
