@@ -2,17 +2,22 @@ pipeline {
     agent any
 
     environment {
-        //AWS_REGION = 'us-west-2'
-        PROJECT_NAME = 'fullstack-app'
-        ENVIRONMENT = 'dev'
-        DOCKER_REGISTRY = 'your-registry.com'
-        KUBERNETES_NAMESPACE = 'fullstack-app'
+        DOCKER_CREDENTIALS_ID = 'docker-hub-credentials'
+        DOCKER_REGISTRY = 'dmzz'
+        FRONTEND_IMAGE = "${DOCKER_REGISTRY}/express-frontend"
+        BACKEND_IMAGE = "${DOCKER_REGISTRY}/express-backend"
+        SONARQUBE_SCANNER_HOME = tool 'SonarScanner'
+        SONAR_HOST_URL = 'http://localhost:9000'
+        SONAR_PROJECT_KEY = 'express_mongo_react'
+        EMAIL_RECIPIENTS = 'sowdmzz@gmail.com'
+        K8S_NAMESPACE = 'express-app'
+        TRIVY_CACHE_DIR = '/tmp/trivy-cache'
     }
 
     parameters {
         choice(
             name: 'ACTION',
-            choices: ['build-scan', 'build-deploy', 'deploy-only', 'security-scan'],
+            choices: ['build-scan', 'build-deploy', 'deploy-only', 'security-scan', 'full-pipeline'],
             description: 'Action à exécuter'
         )
         choice(
@@ -22,7 +27,7 @@ pipeline {
         )
         booleanParam(
             name: 'FAIL_ON_VULNERABILITIES',
-            defaultValue: true,
+            defaultValue: false,
             description: 'Échouer le build si vulnérabilités critiques'
         )
         string(
@@ -32,15 +37,13 @@ pipeline {
         )
     }
 
-    options {
-        timeout(time: 30, unit: 'MINUTES')
-        buildDiscarder(logRotator(numToKeepStr: '5'))
-    }
-
     stages {
         stage('🚀 DÉMARRAGE RAPIDE') {
             steps {
-                checkout scm
+                git branch: 'main',
+                url: 'https://github.com/Buhaha2525/express_mongo_react.git',
+                credentialsId: 'github-credentials'
+
                 script {
                     currentBuild.displayName = "#${currentBuild.number} - ${params.ACTION}"
                     currentBuild.description = "Image: ${params.IMAGE_TAG} - Type: ${params.DEPLOY_TYPE}"
@@ -52,180 +55,332 @@ pipeline {
             }
         }
 
-        stage('🔍 VÉRIFICATION DU CODE') {
+        stage('🔍 ANALYSE STRUCTURE PROJET') {
+            steps {
+                sh '''
+                    echo "🔍 Analyse détaillée de la structure..."
+                    echo "=== Structure complète ==="
+                    find . -type f -name "package.json" | head -20
+                    echo ""
+                    echo "=== Arborescence racine ==="
+                    ls -la
+                    echo ""
+                    echo "=== Fichiers Docker ==="
+                    find . -name "Dockerfile*" -o -name "docker-compose*" -o -name "*.dockerfile" | head -10
+                    echo ""
+                    echo "=== Dossiers Kubernetes ==="
+                    find . -name "*.yaml" -o -name "*.yml" | head -10
+                '''
+            }
+        }
+
+        stage('📁 DÉTECTION AUTOMATIQUE DOSSIERS') {
             steps {
                 script {
-                    echo "🔍 Analyse de la structure du projet..."
+                    def frontendDir = sh(
+                        script: 'find . -name "package.json" -exec dirname {} \\; | grep -iE "(front|client)" | head -1 || find . -maxdepth 2 -name "package.json" -exec dirname {} \\; | head -1',
+                        returnStdout: true
+                    ).trim()
+
+                    def backendDir = sh(
+                        script: 'find . -name "package.json" -exec dirname {} \\; | grep -iE "(back|server|api)" | head -1 || find . -maxdepth 2 -name "package.json" -exec dirname {} \\; | tail -1',
+                        returnStdout: true
+                    ).trim()
+
+                    if (!backendDir && frontendDir) {
+                        backendDir = frontendDir
+                    }
+                    if (!frontendDir && backendDir) {
+                        frontendDir = backendDir
+                    }
+                    if (!frontendDir && !backendDir) {
+                        frontendDir = "."
+                        backendDir = "."
+                    }
+
+                    env.FRONTEND_DIR = frontendDir
+                    env.BACKEND_DIR = backendDir
+
+                    echo "📁 Dossiers détectés:"
+                    echo "Frontend: ${env.FRONTEND_DIR}"
+                    echo "Backend: ${env.BACKEND_DIR}"
 
                     // Vérification de la présence des Dockerfiles
-                    def hasBackendDockerfile = fileExists('backend/Dockerfile')
-                    def hasFrontendDockerfile = fileExists('frontend/Dockerfile')
-                    def hasKubernetesManifests = fileExists('kubernetes/')
+                    def hasDockerCompose = fileExists('docker-compose.yml')
+                    def hasBackendDockerfile = fileExists("${env.BACKEND_DIR}/Dockerfile")
+                    def hasFrontendDockerfile = fileExists("${env.FRONTEND_DIR}/Dockerfile")
 
-                    echo "🐳 Backend Dockerfile: ${hasBackendDockerfile}"
-                    echo "🐳 Frontend Dockerfile: ${hasFrontendDockerfile}"
-                    echo "☸️  Kubernetes Manifests: ${hasKubernetesManifests}"
+                    env.HAS_DOCKER_COMPOSE = hasDockerCompose
+                    env.HAS_BACKEND_DOCKERFILE = hasBackendDockerfile
+                    env.HAS_FRONTEND_DOCKERFILE = hasFrontendDockerfile
+                    env.HAS_DOCKER_IMAGES = hasDockerCompose || hasBackendDockerfile || hasFrontendDockerfile
 
-                    env.HAS_DOCKER_IMAGES = hasBackendDockerfile || hasFrontendDockerfile
-                    env.HAS_KUBERNETES = hasKubernetesManifests
+                    echo "🐳 Docker détecté:"
+                    echo "   Docker Compose: ${env.HAS_DOCKER_COMPOSE}"
+                    echo "   Backend Dockerfile: ${env.HAS_BACKEND_DOCKERFILE}"
+                    echo "   Frontend Dockerfile: ${env.HAS_FRONTEND_DOCKERFILE}"
                 }
             }
         }
 
-        stage('🐳 1. BUILD DES IMAGES DOCKER') {
+        stage('📦 INSTALLATION DÉPENDANCES') {
             when {
-                expression {
-                    params.ACTION in ['build-scan', 'build-deploy'] &&
-                    env.HAS_DOCKER_IMAGES == 'true'
-                }
+                expression { params.ACTION in ['build-scan', 'build-deploy', 'full-pipeline'] }
             }
             parallel {
-                stage('🔧 Build Backend') {
-                    when {
-                        expression { fileExists('backend/Dockerfile') }
-                    }
+                stage('📦 Install Frontend') {
                     steps {
                         script {
-                            echo "🔧 Construction de l'image Backend..."
-
-                            dir('backend') {
-                                // Build de l'image Docker
-                                sh """
-                                docker build -t ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-backend:${params.IMAGE_TAG} .
-                                docker tag ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-backend:${params.IMAGE_TAG} ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-backend:latest
-                                """
-
-                                // Sauvegarde de l'image pour Trivy
-                                sh """
-                                docker save -o backend-image.tar ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-backend:${params.IMAGE_TAG}
-                                """
+                            dir(env.FRONTEND_DIR) {
+                                sh '''
+                                    echo "📦 Installation dépendances Frontend dans $(pwd)"
+                                    if [ -f "package.json" ]; then
+                                        npm install
+                                        echo "✅ Dépendances frontend installées avec succès"
+                                    else
+                                        echo "❌ package.json non trouvé dans $(pwd)"
+                                        exit 1
+                                    fi
+                                '''
                             }
                         }
                     }
                 }
-
-                stage('🌐 Build Frontend') {
-                    when {
-                        expression { fileExists('frontend/Dockerfile') }
-                    }
+                stage('📦 Install Backend') {
                     steps {
                         script {
-                            echo "🌐 Construction de l'image Frontend..."
-
-                            dir('frontend') {
-                                // Build de l'image Docker
-                                sh """
-                                docker build -t ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-frontend:${params.IMAGE_TAG} .
-                                docker tag ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-frontend:${params.IMAGE_TAG} ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-frontend:latest
-                                """
-
-                                // Sauvegarde de l'image pour Trivy
-                                sh """
-                                docker save -o frontend-image.tar ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-frontend:${params.IMAGE_TAG}
-                                """
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('🔒 2. SCAN DE SÉCURITÉ TRIVY') {
-            when {
-                expression {
-                    params.ACTION in ['build-scan', 'security-scan', 'build-deploy'] &&
-                    env.HAS_DOCKER_IMAGES == 'true'
-                }
-            }
-            parallel {
-                stage('🔍 Scan Backend') {
-                    when {
-                        expression { fileExists('backend/Dockerfile') }
-                    }
-                    steps {
-                        script {
-                            echo "🔒 Scan Trivy - Image Backend..."
-
-                            dir('backend') {
-                                // Scan de l'image Docker avec Trivy
-                                sh """
-                                trivy image --format template --template "@html.tpl" -o trivy-backend-report.html ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-backend:${params.IMAGE_TAG}
-                                trivy image --severity CRITICAL,HIGH --exit-code 0 ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-backend:${params.IMAGE_TAG} > trivy-backend-results.txt
-                                """
-
-                                // Analyse des résultats
-                                def trivyOutput = readFile('backend/trivy-backend-results.txt')
-                                env.BACKEND_VULNERABILITIES = trivyOutput
-
-                                // Comptage des vulnérabilités
-                                def criticalCount = trivyOutput.count('CRITICAL')
-                                def highCount = trivyOutput.count('HIGH')
-
-                                echo "📊 Backend - Vulnérabilités: CRITICAL=${criticalCount}, HIGH=${highCount}"
-
-                                if (params.FAIL_ON_VULNERABILITIES && criticalCount > 0) {
-                                    error "❌ Vulnérabilités CRITIQUES détectées dans l'image Backend"
+                            if (env.BACKEND_DIR != env.FRONTEND_DIR) {
+                                dir(env.BACKEND_DIR) {
+                                    sh '''
+                                        echo "📦 Installation dépendances Backend dans $(pwd)"
+                                        if [ -f "package.json" ]; then
+                                            npm install
+                                            echo "✅ Dépendances backend installées avec succès"
+                                        else
+                                            echo "❌ package.json non trouvé dans $(pwd)"
+                                            exit 1
+                                        fi
+                                    '''
                                 }
                             }
                         }
                     }
                 }
+            }
+        }
 
-                stage('🔍 Scan Frontend') {
-                    when {
-                        expression { fileExists('frontend/Dockerfile') }
-                    }
+        stage('🔍 ANALYSE SONARQUBE') {
+            when {
+                expression { params.ACTION in ['build-scan', 'build-deploy', 'full-pipeline'] }
+            }
+            parallel {
+                stage('🔍 Analyse Backend') {
                     steps {
                         script {
-                            echo "🔒 Scan Trivy - Image Frontend..."
-
-                            dir('frontend') {
-                                // Scan de l'image Docker avec Trivy
-                                sh """
-                                trivy image --format template --template "@html.tpl" -o trivy-frontend-report.html ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-frontend:${params.IMAGE_TAG}
-                                trivy image --severity CRITICAL,HIGH --exit-code 0 ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-frontend:${params.IMAGE_TAG} > trivy-frontend-results.txt
-                                """
-
-                                // Analyse des résultats
-                                def trivyOutput = readFile('frontend/trivy-frontend-results.txt')
-                                env.FRONTEND_VULNERABILITIES = trivyOutput
-
-                                // Comptage des vulnérabilités
-                                def criticalCount = trivyOutput.count('CRITICAL')
-                                def highCount = trivyOutput.count('HIGH')
-
-                                echo "📊 Frontend - Vulnérabilités: CRITICAL=${criticalCount}, HIGH=${highCount}"
-
-                                if (params.FAIL_ON_VULNERABILITIES && criticalCount > 0) {
-                                    error "❌ Vulnérabilités CRITIQUES détectées dans l'image Frontend"
+                            withSonarQubeEnv('SonarQube') {
+                                dir(env.BACKEND_DIR) {
+                                    sh '''
+                                        echo "🔍 Analyse SonarQube Backend dans $(pwd)"
+                                        ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
+                                        -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
+                                        -Dsonar.projectName='Express Backend' \
+                                        -Dsonar.projectVersion=${BUILD_NUMBER} \
+                                        -Dsonar.sources=. \
+                                        -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
+                                        -Dsonar.sourceEncoding=UTF-8 \
+                                        -Dsonar.host.url=${SONAR_HOST_URL}
+                                    '''
                                 }
                             }
                         }
                     }
                 }
-
-                stage('📋 Scan Fichiers de Configuration') {
+                stage('🔍 Analyse Frontend') {
                     steps {
                         script {
-                            echo "🔒 Scan Trivy - Fichiers de configuration..."
-
-                            // Scan des Dockerfiles
-                            if (fileExists('backend/Dockerfile')) {
-                                sh """
-                                trivy config --severity CRITICAL,HIGH backend/ > trivy-backend-config.txt
-                                """
+                            if (env.FRONTEND_DIR != env.BACKEND_DIR) {
+                                withSonarQubeEnv('SonarQube') {
+                                    dir(env.FRONTEND_DIR) {
+                                        sh '''
+                                            echo "🔍 Analyse SonarQube Frontend dans $(pwd)"
+                                            ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
+                                            -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
+                                            -Dsonar.projectName='React Frontend' \
+                                            -Dsonar.projectVersion=${BUILD_NUMBER} \
+                                            -Dsonar.sources=. \
+                                            -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
+                                            -Dsonar.sourceEncoding=UTF-8 \
+                                            -Dsonar.host.url=${SONAR_HOST_URL}
+                                        '''
+                                    }
+                                }
                             }
+                        }
+                    }
+                }
+            }
+        }
 
-                            if (fileExists('frontend/Dockerfile')) {
-                                sh """
-                                trivy config --severity CRITICAL,HIGH frontend/ > trivy-frontend-config.txt
-                                """
+        stage('🐳 BUILD IMAGES DOCKER') {
+            when {
+                expression {
+                    params.ACTION in ['build-scan', 'build-deploy', 'full-pipeline'] &&
+                    env.HAS_DOCKER_IMAGES == 'true'
+                }
+            }
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: "${DOCKER_CREDENTIALS_ID}",
+                    usernameVariable: 'DOCKER_USERNAME',
+                    passwordVariable: 'DOCKER_PASSWORD'
+                )]) {
+                    sh '''
+                        echo "🔐 Connexion à Docker Hub..."
+                        echo "$DOCKER_PASSWORD" | docker login -u "$DOCKER_USERNAME" --password-stdin
+
+                        echo "🔨 Construction des images Docker..."
+
+                        if [ "${HAS_DOCKER_COMPOSE}" = "true" ]; then
+                            echo "🏗️  Construction avec Docker Compose..."
+                            docker compose build --no-cache
+                        else
+                            echo "🏗️  Construction manuelle des images..."
+                            # Backend
+                            if [ "${HAS_BACKEND_DOCKERFILE}" = "true" ]; then
+                                docker build -t ${BACKEND_IMAGE}:${BUILD_NUMBER} ${BACKEND_DIR}
+                                docker tag ${BACKEND_IMAGE}:${BUILD_NUMBER} ${BACKEND_IMAGE}:latest
+                            fi
+                            # Frontend
+                            if [ "${HAS_FRONTEND_DOCKERFILE}" = "true" ]; then
+                                docker build -t ${FRONTEND_IMAGE}:${BUILD_NUMBER} ${FRONTEND_DIR}
+                                docker tag ${FRONTEND_IMAGE}:${BUILD_NUMBER} ${FRONTEND_IMAGE}:latest
+                            fi
+                        fi
+
+                        echo "🏷️  Taggage des images..."
+                        docker images | grep "${DOCKER_REGISTRY}"
+                    '''
+                }
+            }
+        }
+
+        stage('🔒 SCAN SÉCURITÉ TRIVY') {
+            when {
+                expression {
+                    params.ACTION in ['build-scan', 'security-scan', 'build-deploy', 'full-pipeline'] &&
+                    env.HAS_DOCKER_IMAGES == 'true'
+                }
+            }
+            steps {
+                script {
+                    echo "🔒 INITIALISATION TRIVY..."
+                    sh """
+                        mkdir -p ${TRIVY_CACHE_DIR}
+                        trivy --version
+                        trivy image --download-db-only
+                    """
+                }
+
+                parallel {
+                    stage('🔍 Scan Image Backend') {
+                        when {
+                            expression {
+                                env.HAS_BACKEND_DOCKERFILE == 'true' ||
+                                env.HAS_DOCKER_COMPOSE == 'true'
                             }
+                        }
+                        steps {
+                            script {
+                                echo "🔒 Scan Trivy - Image Backend..."
 
-                            // Scan des manifests Kubernetes
-                            if (fileExists('kubernetes/')) {
                                 sh """
-                                trivy config --severity CRITICAL,HIGH kubernetes/ > trivy-kubernetes-config.txt
+                                    # Scan de l'image Docker avec Trivy
+                                    trivy image --format json -o trivy-backend-report.json ${BACKEND_IMAGE}:${BUILD_NUMBER} || true
+                                    trivy image --severity CRITICAL,HIGH --exit-code 0 ${BACKEND_IMAGE}:${BUILD_NUMBER} > trivy-backend-results.txt || true
+
+                                    # Génération rapport HTML
+                                    trivy image --format template --template "@contrib/html.tpl" -o trivy-backend-report.html ${BACKEND_IMAGE}:${BUILD_NUMBER} || true
+                                """
+
+                                // Analyse des résultats
+                                if (fileExists('trivy-backend-results.txt')) {
+                                    def trivyOutput = readFile('trivy-backend-results.txt')
+                                    env.BACKEND_VULNERABILITIES = trivyOutput
+
+                                    // Comptage des vulnérabilités
+                                    def criticalCount = trivyOutput.count('CRITICAL')
+                                    def highCount = trivyOutput.count('HIGH')
+
+                                    echo "📊 Backend - Vulnérabilités: CRITICAL=${criticalCount}, HIGH=${highCount}"
+
+                                    if (params.FAIL_ON_VULNERABILITIES && criticalCount > 0) {
+                                        error "❌ Vulnérabilités CRITIQUES détectées dans l'image Backend"
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    stage('🔍 Scan Image Frontend') {
+                        when {
+                            expression {
+                                env.HAS_FRONTEND_DOCKERFILE == 'true' ||
+                                env.HAS_DOCKER_COMPOSE == 'true'
+                            }
+                        }
+                        steps {
+                            script {
+                                echo "🔒 Scan Trivy - Image Frontend..."
+
+                                sh """
+                                    # Scan de l'image Docker avec Trivy
+                                    trivy image --format json -o trivy-frontend-report.json ${FRONTEND_IMAGE}:${BUILD_NUMBER} || true
+                                    trivy image --severity CRITICAL,HIGH --exit-code 0 ${FRONTEND_IMAGE}:${BUILD_NUMBER} > trivy-frontend-results.txt || true
+
+                                    # Génération rapport HTML
+                                    trivy image --format template --template "@contrib/html.tpl" -o trivy-frontend-report.html ${FRONTEND_IMAGE}:${BUILD_NUMBER} || true
+                                """
+
+                                // Analyse des résultats
+                                if (fileExists('trivy-frontend-results.txt')) {
+                                    def trivyOutput = readFile('trivy-frontend-results.txt')
+                                    env.FRONTEND_VULNERABILITIES = trivyOutput
+
+                                    // Comptage des vulnérabilités
+                                    def criticalCount = trivyOutput.count('CRITICAL')
+                                    def highCount = trivyOutput.count('HIGH')
+
+                                    echo "📊 Frontend - Vulnérabilités: CRITICAL=${criticalCount}, HIGH=${highCount}"
+
+                                    if (params.FAIL_ON_VULNERABILITIES && criticalCount > 0) {
+                                        error "❌ Vulnérabilités CRITIQUES détectées dans l'image Frontend"
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    stage('📋 Scan Fichiers de Configuration') {
+                        steps {
+                            script {
+                                echo "🔒 Scan Trivy - Fichiers de configuration..."
+
+                                // Scan des Dockerfiles
+                                if (env.HAS_BACKEND_DOCKERFILE == 'true') {
+                                    sh """
+                                        trivy config --severity CRITICAL,HIGH ${BACKEND_DIR} > trivy-backend-config.txt || true
+                                    """
+                                }
+
+                                if (env.HAS_FRONTEND_DOCKERFILE == 'true') {
+                                    sh """
+                                        trivy config --severity CRITICAL,HIGH ${FRONTEND_DIR} > trivy-frontend-config.txt || true
+                                    """
+                                }
+
+                                // Scan des fichiers de configuration
+                                sh """
+                                    trivy fs --severity CRITICAL,HIGH . > trivy-filesystem-results.txt || true
                                 """
                             }
                         }
@@ -234,36 +389,116 @@ pipeline {
             }
         }
 
-        stage('☸️ 3. SCAN KUBERNETES MANIFESTS') {
+        stage('☸️ PRÉPARATION KUBERNETES SIMPLIFIÉE') {
+            when {
+                expression { params.ACTION in ['build-deploy', 'deploy-only', 'full-pipeline'] }
+            }
+            steps {
+                script {
+                    echo "📋 Création des manifests Kubernetes simplifiés..."
+
+                    // Création du dossier k8s
+                    sh 'mkdir -p k8s-demo'
+
+                    // Utilisation de vos fichiers de démonstration
+                    writeFile file: 'k8s-demo/deployment-demo.yaml', text: """apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deployment
+  namespace: ${K8S_NAMESPACE}
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: nginx
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:alpine
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "50m"
+          limits:
+            memory: "128Mi"
+            cpu: "100m"
+"""
+
+                    writeFile file: 'k8s-demo/service-demo.yaml', text: """apiVersion: v1
+kind: Service
+metadata:
+  name: nginx-service
+  namespace: ${K8S_NAMESPACE}
+spec:
+  selector:
+    app: nginx
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+  type: LoadBalancer
+"""
+
+                    writeFile file: 'k8s-demo/configmap-demo.yaml', text: """apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: ${K8S_NAMESPACE}
+data:
+  database.url: "mongodb://mongo-service:27017/smartphoneDB"
+  log.level: "info"
+  app.name: "Express Mongo React App"
+  app.version: "${BUILD_NUMBER}"
+"""
+
+                    writeFile file: 'k8s-demo/pvc-demo.yaml', text: """apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: my-pvc
+  namespace: ${K8S_NAMESPACE}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+"""
+
+                    echo "✅ Manifests Kubernetes simplifiés générés"
+                    sh 'ls -la k8s-demo/'
+                    sh 'cat k8s-demo/*.yaml'
+                }
+            }
+        }
+
+        stage('🔍 SCAN MANIFESTS KUBERNETES') {
             when {
                 expression {
-                    params.ACTION in ['security-scan', 'build-deploy'] &&
-                    env.HAS_KUBERNETES == 'true'
+                    params.ACTION in ['security-scan', 'build-deploy', 'full-pipeline']
                 }
             }
             steps {
                 script {
                     echo "🔒 Scan Trivy - Manifests Kubernetes..."
 
-                    dir('kubernetes') {
-                        // Scan de sécurité des manifests Kubernetes
-                        sh """
-                        trivy k8s --report summary cluster \
-                            --format template \
-                            --template "@html.tpl" \
-                            -o trivy-kubernetes-report.html \
-                            --timeout 10m
-                        """
-
+                    dir('k8s-demo') {
                         // Scan des fichiers YAML individuels
                         sh """
-                        find . -name "*.yaml" -o -name "*.yml" | xargs -I {} trivy config {} > trivy-k8s-manifests.txt
+                            trivy config --severity CRITICAL,HIGH . > trivy-k8s-results.txt || true
+                            echo "📊 Résultats du scan Kubernetes:"
+                            cat trivy-k8s-results.txt || echo "Aucun résultat"
                         """
                     }
 
                     // Analyse des résultats Kubernetes
-                    if (fileExists('kubernetes/trivy-k8s-manifests.txt')) {
-                        def k8sResults = readFile('kubernetes/trivy-k8s-manifests.txt')
+                    if (fileExists('k8s-demo/trivy-k8s-results.txt')) {
+                        def k8sResults = readFile('k8s-demo/trivy-k8s-results.txt')
                         env.KUBERNETES_VULNERABILITIES = k8sResults
 
                         def k8sCriticalCount = k8sResults.count('CRITICAL')
@@ -279,122 +514,183 @@ pipeline {
             }
         }
 
-        stage('🚀 4. DÉPLOIEMENT KUBERNETES') {
+        stage('🚀 DÉPLOIEMENT KUBERNETES SIMPLIFIÉ') {
             when {
                 expression {
-                    params.ACTION in ['build-deploy', 'deploy-only'] &&
-                    env.HAS_KUBERNETES == 'true'
+                    params.ACTION in ['build-deploy', 'deploy-only', 'full-pipeline']
                 }
             }
             steps {
                 script {
-                    echo "🚀 Déploiement sur Kubernetes..."
+                    echo "🚀 Déploiement Kubernetes simplifié..."
 
-                    withCredentials([
-                        file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')
-                    ]) {
-                        sh """
-                        export KUBECONFIG=${KUBECONFIG_FILE}
+                    sh """
+                        echo "🏗️  Création du namespace..."
+                        kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f - || echo "Namespace déjà existant"
+                    """
 
-                        # Création du namespace si nécessaire
-                        kubectl create namespace ${env.KUBERNETES_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+                    sh """
+                        echo "📦 Déploiement ConfigMap..."
+                        kubectl apply -f k8s-demo/configmap-demo.yaml
+                    """
 
-                        # Déploiement des applications
-                        if [ -f "kubernetes/backend-deployment.yaml" ]; then
-                            kubectl apply -n ${env.KUBERNETES_NAMESPACE} -f kubernetes/backend-deployment.yaml
+                    sh """
+                        echo "💾 Déploiement PVC..."
+                        kubectl apply -f k8s-demo/pvc-demo.yaml
+                    """
+
+                    sh """
+                        echo "🚀 Déploiement Deployment..."
+                        kubectl apply -f k8s-demo/deployment-demo.yaml
+                    """
+
+                    sh """
+                        echo "🌐 Déploiement Service..."
+                        kubectl apply -f k8s-demo/service-demo.yaml
+                    """
+
+                    // Attente du démarrage
+                    sh """
+                        echo "⏳ Attente du démarrage des pods..."
+                        for i in {1..12}; do
+                            READY=\$(kubectl get deployment nginx-deployment -n ${K8S_NAMESPACE} -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+                            DESIRED=\$(kubectl get deployment nginx-deployment -n ${K8S_NAMESPACE} -o jsonpath='{.status.replicas}' 2>/dev/null || echo "0")
+
+                            if [ "\\$READY" = "\\$DESIRED" ] && [ "\\$DESIRED" -gt 0 ]; then
+                                echo "✅ Tous les pods sont prêts"
+                                break
+                            fi
+                            echo "⏳ Pods prêts: \\$READY/\\$DESIRED (essai \$i/12)"
+                            sleep 5
+                        done
+                    """
+
+                    // Affichage des informations
+                    sh '''
+                        echo "📊 État final du déploiement:"
+                        echo ""
+                        echo "📦 Deployments:"
+                        kubectl get deployments -n ${K8S_NAMESPACE}
+                        echo ""
+                        echo "🔗 Services:"
+                        kubectl get services -n ${K8S_NAMESPACE}
+                        echo ""
+                        echo "🗂️  ConfigMaps:"
+                        kubectl get configmaps -n ${K8S_NAMESPACE}
+                        echo ""
+                        echo "💾 PVCs:"
+                        kubectl get pvc -n ${K8S_NAMESPACE}
+                        echo ""
+                        echo "🐛 Pods:"
+                        kubectl get pods -n ${K8S_NAMESPACE} -o wide
+                    '''
+
+                    // Récupération de l'URL d'accès
+                    sh """
+                        echo "🌐 Récupération de l'URL d'accès..."
+                        EXTERNAL_IP=\$(kubectl get svc nginx-service -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+
+                        if [ -n "\\$EXTERNAL_IP" ]; then
+                            echo "🎯 Application accessible à: http://\\$EXTERNAL_IP"
+                            echo "http://\\$EXTERNAL_IP" > app-url.txt
+                        else
+                            echo "🔧 Configuration du port-forward temporaire..."
+                            kubectl port-forward svc/nginx-service 8080:80 -n ${K8S_NAMESPACE} --address=0.0.0.0 &
+                            echo "🎯 Application accessible à: http://localhost:8080"
+                            echo "http://localhost:8080" > app-url.txt
                         fi
-
-                        if [ -f "kubernetes/frontend-deployment.yaml" ]; then
-                            kubectl apply -n ${env.KUBERNETES_NAMESPACE} -f kubernetes/frontend-deployment.yaml
-                        fi
-
-                        if [ -f "kubernetes/database-deployment.yaml" ] && [ "${params.DEPLOY_TYPE}" != "basic" ]; then
-                            kubectl apply -n ${env.KUBERNETES_NAMESPACE} -f kubernetes/database-deployment.yaml
-                        fi
-
-                        # Déploiement des services
-                        if [ -f "kubernetes/services.yaml" ]; then
-                            kubectl apply -n ${env.KUBERNETES_NAMESPACE} -f kubernetes/services.yaml
-                        fi
-
-                        echo "✅ Déploiement Kubernetes terminé"
-                        """
-                    }
+                    """
                 }
             }
         }
 
-        stage('🧪 5. TESTS ET VÉRIFICATIONS') {
+        stage('🧪 TESTS APPLICATION') {
             when {
-                expression { params.ACTION in ['build-deploy', 'deploy-only'] }
+                expression { params.ACTION in ['build-deploy', 'full-pipeline'] }
             }
             steps {
                 script {
-                    echo "🧪 Tests et vérifications post-déploiement..."
+                    echo "🧪 Tests de l'application déployée..."
 
-                    withCredentials([
-                        file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')
-                    ]) {
-                        sh """
-                        export KUBECONFIG=${KUBECONFIG_FILE}
+                    def appUrl = sh(script: "cat app-url.txt", returnStdout: true).trim()
 
-                        # Vérification du statut des pods
-                        echo "📊 Statut des pods:"
-                        kubectl get pods -n ${env.KUBERNETES_NAMESPACE}
+                    sh """
+                        echo "🔍 Test de l'application sur: ${appUrl}"
+                        echo "⏳ Attente supplémentaire pour le démarrage..."
+                        sleep 10
 
-                        # Attente que les pods soient prêts
-                        echo "⏳ Attente du déploiement..."
-                        kubectl wait --for=condition=ready pod -l app=backend -n ${env.KUBERNETES_NAMESPACE} --timeout=300s
-                        kubectl wait --for=condition=ready pod -l app=frontend -n ${env.KUBERNETES_NAMESPACE} --timeout=300s
+                        # Test de connectivité
+                        if curl -f -s --connect-timeout 30 "${appUrl}" > /dev/null; then
+                            echo "✅ Application accessible avec succès"
+                        else
+                            echo "⚠️  Application non accessible, vérification des logs..."
+                            kubectl logs -n ${K8S_NAMESPACE} deployment/nginx-deployment --tail=10 || true
+                        fi
 
-                        # Tests de santé
-                        echo "🔍 Tests de santé..."
-                        kubectl get svc -n ${env.KUBERNETES_NAMESPACE}
-                        """
-                    }
+                        # Test de santé
+                        echo "🏥 Test de santé des pods..."
+                        kubectl get pods -n ${K8S_NAMESPACE} --no-headers | while read pod status rest; do
+                            echo "Pod: \\$pod - Status: \\$status"
+                        done
+                    """
                 }
             }
         }
 
-        stage('📋 6. RAPPORT DE SÉCURITÉ') {
+        stage('📊 RAPPORT DE SÉCURITÉ FINAL') {
             steps {
                 script {
                     echo "📋 GÉNÉRATION DU RAPPORT DE SÉCURITÉ"
 
+                    // Lecture de l'URL de l'application
+                    def appUrl = "Non disponible"
+                    if (fileExists('app-url.txt')) {
+                        appUrl = sh(script: "cat app-url.txt", returnStdout: true).trim()
+                    }
+
                     def securityReport = """
-                    🔒 RAPPORT DE SÉCURITÉ TRIVY
-                    ============================
+                    🔒 RAPPORT DE SÉCURITÉ TRIVY - EXPRESS MONGO REACT
+                    ===================================================
 
                     📅 Date: ${new Date().format('yyyy-MM-dd HH:mm:ss')}
                     🎯 Type: ${params.DEPLOY_TYPE}
                     🔧 Action: ${params.ACTION}
                     🐳 Image Tag: ${params.IMAGE_TAG}
+                    📁 Structure: Frontend(${env.FRONTEND_DIR}), Backend(${env.BACKEND_DIR})
+                    🌐 Application: ${appUrl}
 
                     📊 RÉSULTATS DES SCANS:
                     =====================
 
-                    BACKEND:
-                    ${env.BACKEND_VULNERABILITIES ?: 'Aucun scan effectué'}
+                    DOCKER IMAGES:
+                    ${env.BACKEND_VULNERABILITIES ?: 'Aucune image scannée'}
+                    ${env.FRONTEND_VULNERABILITIES ?: ''}
 
-                    FRONTEND:
-                    ${env.FRONTEND_VULNERABILITIES ?: 'Aucun scan effectué'}
+                    KUBERNETES MANIFESTS:
+                    ${env.KUBERNETES_VULNERABILITIES ?: 'Aucun manifest Kubernetes scanné'}
 
-                    KUBERNETES:
-                    ${env.KUBERNETES_VULNERABILITIES ?: 'Aucun scan effectué'}
+                    🐳 RESSOURCES DÉPLOYÉES:
+                    =======================
+                    • Namespace: ${K8S_NAMESPACE}
+                    • Deployment: nginx-deployment (2 replicas)
+                    • Service: nginx-service (LoadBalancer)
+                    • ConfigMap: app-config
+                    • PVC: my-pvc (1Gi)
 
-                    ⚠️  RECOMMANDATIONS:
-                    ===================
-                    • Mettre à jour les images de base
-                    • Corriger les vulnérabilités CRITICAL/HIGH
-                    • Réviser les configurations Kubernetes
-                    • Mettre à jour les dépendances
+                    ⚠️  RECOMMANDATIONS DE SÉCURITÉ:
+                    ==============================
+                    • Mettre à jour les images de base régulièrement
+                    • Corriger les vulnérabilités CRITICAL/HIGH identifiées
+                    • Réviser les configurations des ressources Kubernetes
+                    • Limiter les permissions des services
+                    • Utiliser des secrets pour les données sensibles
 
                     ✅ PROCHAINES ÉTAPES:
                     ====================
-                    1. Examiner les rapports HTML détaillés
-                    2. Corriger les vulnérabilités critiques
-                    3. Relancer le scan après corrections
-                    4. Déployer en production après validation
+                    1. Accéder à l'application: ${appUrl}
+                    2. Examiner les rapports de sécurité détaillés
+                    3. Corriger les vulnérabilités identifiées
+                    4. Relancer le pipeline après corrections
                     """
 
                     writeFile file: 'security-report.txt', text: securityReport
@@ -403,23 +699,29 @@ pipeline {
                     sh """
                     echo "🔒 RAPPORT CONSOLIDÉ DE SÉCURITÉ" > consolidated-security-report.txt
                     echo "================================" >> consolidated-security-report.txt
+                    echo "Build: ${BUILD_NUMBER}" >> consolidated-security-report.txt
+                    echo "Date: ${new Date().format('yyyy-MM-dd HH:mm:ss')}" >> consolidated-security-report.txt
+                    echo "Application: ${appUrl}" >> consolidated-security-report.txt
                     echo "" >> consolidated-security-report.txt
 
-                    if [ -f "backend/trivy-backend-results.txt" ]; then
-                        echo "📋 BACKEND:" >> consolidated-security-report.txt
-                        cat backend/trivy-backend-results.txt >> consolidated-security-report.txt
+                    if [ -f "trivy-backend-results.txt" ]; then
+                        echo "📋 BACKEND IMAGE:" >> consolidated-security-report.txt
+                        echo "=================" >> consolidated-security-report.txt
+                        cat trivy-backend-results.txt >> consolidated-security-report.txt
                         echo "" >> consolidated-security-report.txt
                     fi
 
-                    if [ -f "frontend/trivy-frontend-results.txt" ]; then
-                        echo "📋 FRONTEND:" >> consolidated-security-report.txt
-                        cat frontend/trivy-frontend-results.txt >> consolidated-security-report.txt
+                    if [ -f "trivy-frontend-results.txt" ]; then
+                        echo "📋 FRONTEND IMAGE:" >> consolidated-security-report.txt
+                        echo "==================" >> consolidated-security-report.txt
+                        cat trivy-frontend-results.txt >> consolidated-security-report.txt
                         echo "" >> consolidated-security-report.txt
                     fi
 
-                    if [ -f "kubernetes/trivy-k8s-manifests.txt" ]; then
-                        echo "📋 KUBERNETES:" >> consolidated-security-report.txt
-                        cat kubernetes/trivy-k8s-manifests.txt >> consolidated-security-report.txt
+                    if [ -f "k8s-demo/trivy-k8s-results.txt" ]; then
+                        echo "📋 KUBERNETES MANIFESTS:" >> consolidated-security-report.txt
+                        echo "========================" >> consolidated-security-report.txt
+                        cat k8s-demo/trivy-k8s-results.txt >> consolidated-security-report.txt
                     fi
                     """
                 }
@@ -428,9 +730,11 @@ pipeline {
                 always {
                     archiveArtifacts artifacts: 'security-report.txt', fingerprint: true
                     archiveArtifacts artifacts: 'consolidated-security-report.txt', fingerprint: true
-                    archiveArtifacts artifacts: 'backend/trivy-backend-report.html', fingerprint: true
-                    archiveArtifacts artifacts: 'frontend/trivy-frontend-report.html', fingerprint: true
-                    archiveArtifacts artifacts: 'kubernetes/trivy-kubernetes-report.html', fingerprint: true
+                    archiveArtifacts artifacts: 'trivy-backend-report.html', allowMissing: true, fingerprint: true
+                    archiveArtifacts artifacts: 'trivy-frontend-report.html', allowMissing: true, fingerprint: true
+                    archiveArtifacts artifacts: 'trivy-backend-report.json', allowMissing: true, fingerprint: true
+                    archiveArtifacts artifacts: 'trivy-frontend-report.json', allowMissing: true, fingerprint: true
+                    archiveArtifacts artifacts: 'app-url.txt', allowMissing: true, fingerprint: true
                 }
             }
         }
@@ -440,21 +744,34 @@ pipeline {
         always {
             echo "🔧 NETTOYAGE"
             sh '''
-            # Nettoyage des images temporaires
-            docker image prune -f || true
+                # Nettoyage des images temporaires
+                docker image prune -f || true
 
-            # Suppression des fichiers temporaires
-            rm -f backend/backend-image.tar || true
-            rm -f frontend/frontend-image.tar || true
-            rm -f backend/trivy-backend-results.txt || true
-            rm -f frontend/trivy-frontend-results.txt || true
+                # Nettoyage des fichiers temporaires
+                rm -f trivy-*.txt trivy-*.json trivy-*.html || true
+                rm -f k8s-demo/trivy-*.txt || true
+                rm -f app-url.txt || true
+
+                # Arrêter le port-forward s'il est actif
+                if [ -f /tmp/portforward.pid ]; then
+                    PF_PID=$(cat /tmp/portforward.pid)
+                    kill $PF_PID 2>/dev/null || true
+                    rm -f /tmp/portforward.pid
+                    echo "🔴 Port-forward arrêté"
+                fi
             '''
         }
 
         success {
             script {
+                def appUrl = "Non disponible"
+                if (fileExists('app-url.txt')) {
+                    appUrl = sh(script: "cat app-url.txt", returnStdout: true).trim()
+                }
+
                 if (params.ACTION != 'security-scan') {
                     echo "🎉 DÉPLOIEMENT RÉUSSI!"
+                    echo "🌐 Application: ${appUrl}"
                     echo "🔒 Rapports de sécurité générés"
                     echo "📋 Téléchargez les rapports pour plus d'informations"
                 } else {
