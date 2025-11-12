@@ -2,17 +2,17 @@ pipeline {
     agent any
 
     environment {
-        AWS_REGION = 'us-west-2'
+        //AWS_REGION = 'us-west-2'
         PROJECT_NAME = 'fullstack-app'
         ENVIRONMENT = 'dev'
-        TERRAFORM_DIR = 'terraform'
-        DEPLOY_DIR = 'deploy'
+        DOCKER_REGISTRY = 'your-registry.com'
+        KUBERNETES_NAMESPACE = 'fullstack-app'
     }
 
     parameters {
         choice(
             name: 'ACTION',
-            choices: ['infra-only', 'infra-deploy', 'deploy-only', 'destroy'],
+            choices: ['build-scan', 'build-deploy', 'deploy-only', 'security-scan'],
             description: 'Action à exécuter'
         )
         choice(
@@ -21,14 +21,19 @@ pipeline {
             description: 'Type de déploiement'
         )
         booleanParam(
-            name: 'SKIP_CREDENTIAL_CHECK',
+            name: 'FAIL_ON_VULNERABILITIES',
             defaultValue: true,
-            description: 'SKIP la vérification AWS (sandbox)'
+            description: 'Échouer le build si vulnérabilités critiques'
+        )
+        string(
+            name: 'IMAGE_TAG',
+            defaultValue: 'latest',
+            description: 'Tag pour les images Docker'
         )
     }
 
     options {
-        timeout(time: 25, unit: 'MINUTES')
+        timeout(time: 30, unit: 'MINUTES')
         buildDiscarder(logRotator(numToKeepStr: '5'))
     }
 
@@ -38,423 +43,394 @@ pipeline {
                 checkout scm
                 script {
                     currentBuild.displayName = "#${currentBuild.number} - ${params.ACTION}"
-                    echo "🔧 MODE SANDBOX ACTIVÉ - Déploiement Fullstack"
+                    currentBuild.description = "Image: ${params.IMAGE_TAG} - Type: ${params.DEPLOY_TYPE}"
+                    echo "🔧 SCAN DE SÉCURITÉ AVEC TRIVY"
                     echo "📦 Action: ${params.ACTION}"
                     echo "🎯 Type: ${params.DEPLOY_TYPE}"
+                    echo "🐳 Image Tag: ${params.IMAGE_TAG}"
                 }
             }
         }
 
-        stage('⚡ CONFIGURATION AWS') {
-            steps {
-                withCredentials([
-                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
-                    string(credentialsId: 'aws-session-token', variable: 'AWS_SESSION_TOKEN')
-                ]) {
-                    sh '''
-                    echo "🔐 Injection des credentials AWS..."
-                    export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
-                    export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
-                    export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
-                    export AWS_DEFAULT_REGION=us-west-2
-
-                    if [ "$SKIP_CREDENTIAL_CHECK" = "false" ]; then
-                        echo "🧪 Test rapide des credentials..."
-                        timeout 10s aws sts get-caller-identity || echo "⚠️ Test credentials échoué"
-                    else
-                        echo "⏩ Test credentials skipped (mode sandbox)"
-                    fi
-                    '''
-                }
-            }
-        }
-
-        stage('🏗️ 1. INFRASTRUCTURE TERRAFORM') {
-            when {
-                expression { params.ACTION in ['infra-only', 'infra-deploy'] }
-            }
-            steps {
-                withCredentials([
-                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
-                    string(credentialsId: 'aws-session-token', variable: 'AWS_SESSION_TOKEN')
-                ]) {
-                    dir('terraform') {
-                        script {
-                            echo "🏗️ CRÉATION DE L'INFRASTRUCTURE AWS..."
-
-                            // Init Terraform
-                            sh '''
-                            export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
-                            export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
-                            export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
-                            export AWS_DEFAULT_REGION=us-west-2
-
-                            echo "🚀 Initialisation Terraform..."
-                            terraform init -input=false -reconfigure
-                            '''
-
-                            // Apply Infrastructure
-                            sh '''
-                            export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
-                            export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
-                            export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
-                            export AWS_DEFAULT_REGION=us-west-2
-
-                            echo "🏗️ Déploiement de l'infrastructure..."
-                            timeout 15m terraform apply \
-                                -var="aws_region=us-west-2" \
-                                -var="project_name=fullstack-app" \
-                                -var="environment=dev" \
-                                -var="backend_port=5000" \
-                                -var="frontend_port=3000" \
-                                -var="mongodb_port=27017" \
-                                -var="ssh_port=22" \
-                                -auto-approve \
-                                -input=false
-                            '''
-
-                            // Sauvegarde des outputs
-                            sh '''
-                            export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
-                            export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
-                            export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
-                            export AWS_DEFAULT_REGION=us-west-2
-
-                            terraform output -json > ../infrastructure-outputs.json
-                            terraform output -raw ssh_private_key > ../deploy-key.pem
-                            chmod 400 ../deploy-key.pem
-                            '''
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('📊 RÉCUPÉRATION INFOS INFRA') {
-            when {
-                expression { params.ACTION in ['infra-only', 'infra-deploy', 'deploy-only'] }
-            }
+        stage('🔍 VÉRIFICATION DU CODE') {
             steps {
                 script {
-                    // Lire les outputs de l'infrastructure
-                    def infraOutputs = readJSON file: 'infrastructure-outputs.json'
+                    echo "🔍 Analyse de la structure du projet..."
 
-                    env.BACKEND_IP = infraOutputs.backend_public_ip?.value ?: "N/A"
-                    env.FRONTEND_IP = infraOutputs.frontend_public_ip?.value ?: "N/A"
-                    env.MONGODB_IP = infraOutputs.mongodb_private_ip?.value ?: "N/A"
+                    // Vérification de la présence des Dockerfiles
+                    def hasBackendDockerfile = fileExists('backend/Dockerfile')
+                    def hasFrontendDockerfile = fileExists('frontend/Dockerfile')
+                    def hasKubernetesManifests = fileExists('kubernetes/')
 
-                    echo "📡 Adresses IP récupérées:"
-                    echo "   Backend:  ${env.BACKEND_IP}"
-                    echo "   Frontend: ${env.FRONTEND_IP}"
-                    echo "   MongoDB:  ${env.MONGODB_IP}"
+                    echo "🐳 Backend Dockerfile: ${hasBackendDockerfile}"
+                    echo "🐳 Frontend Dockerfile: ${hasFrontendDockerfile}"
+                    echo "☸️  Kubernetes Manifests: ${hasKubernetesManifests}"
 
-                    // Créer le fichier d'informations
-                    writeFile file: 'infrastructure-info.txt', text: """
-                    🌐 INFORMATIONS INFRASTRUCTURE
-                    =============================
-                    Backend API:    ${env.BACKEND_IP}:5000
-                    Frontend Web:   ${env.FRONTEND_IP}
-                    MongoDB:        ${env.MONGODB_IP}:27017
-
-                    🔗 URLs d'accès:
-                    - Frontend: http://${env.FRONTEND_IP}
-                    - Backend:  http://${env.BACKEND_IP}:5000/api/health
-
-                    📋 Connexions SSH:
-                    ssh -i deploy-key.pem ec2-user@${env.BACKEND_IP}
-                    ssh -i deploy-key.pem ec2-user@${env.FRONTEND_IP}
-                    """
+                    env.HAS_DOCKER_IMAGES = hasBackendDockerfile || hasFrontendDockerfile
+                    env.HAS_KUBERNETES = hasKubernetesManifests
                 }
             }
         }
 
-        stage('🚀 2. DÉPLOIEMENT APPLICATION') {
+        stage('🐳 1. BUILD DES IMAGES DOCKER') {
             when {
-                expression { params.ACTION in ['infra-deploy', 'deploy-only'] }
+                expression {
+                    params.ACTION in ['build-scan', 'build-deploy'] &&
+                    env.HAS_DOCKER_IMAGES == 'true'
+                }
             }
-            steps {
-                script {
-                    echo "🚀 DÉPLOIEMENT DE L'APPLICATION FULLSTACK"
-                    echo "🎯 Type: ${params.DEPLOY_TYPE}"
-
-                    // Vérification que les IPs sont disponibles
-                    if (env.BACKEND_IP == "N/A" || env.FRONTEND_IP == "N/A") {
-                        error "❌ Impossible de récupérer les IPs de l'infrastructure"
-                    }
-                }
-
-                // DÉPLOIEMENT BACKEND
-                stage('🔧 Déploiement Backend') {
-                    steps {
-                        script {
-                            echo "🔧 Déploiement du Backend Express sur ${env.BACKEND_IP}"
-
-                            // Le backend est déjà déployé via user_data dans Terraform
-                            // On peut juste vérifier qu'il fonctionne
-                            sh """
-                            echo "✅ Backend déployé automatiquement via Terraform"
-                            echo "🧪 Test du backend..."
-
-                            # Attendre que le backend soit prêt
-                            for i in {1..10}; do
-                                if curl -s http://${env.BACKEND_IP}:5000/api/health > /dev/null; then
-                                    echo "✅ Backend opérationnel après \$i essais"
-                                    break
-                                else
-                                    echo "⏳ Backend non disponible, essai \$i/10..."
-                                    sleep 15
-                                fi
-                            done
-                            """
-                        }
-                    }
-                }
-
-                // DÉPLOIEMENT MONGODB
-                stage('🗄️ Configuration MongoDB') {
+            parallel {
+                stage('🔧 Build Backend') {
                     when {
-                        expression { params.DEPLOY_TYPE in ['with-db', 'full'] }
+                        expression { fileExists('backend/Dockerfile') }
                     }
                     steps {
                         script {
-                            echo "🗄️ Configuration MongoDB sur ${env.MONGODB_IP}"
+                            echo "🔧 Construction de l'image Backend..."
 
-                            // MongoDB est déjà configuré via user_data dans Terraform
-                            sh """
-                            echo "✅ MongoDB configuré automatiquement via Terraform"
-                            echo "🔗 URL de connexion: mongodb://appuser:apppass123@${env.MONGODB_IP}:27017/fullstackapp"
-                            """
-                        }
-                    }
-                }
-
-                // DÉPLOIEMENT FRONTEND AVEC APPLICATION RÉELLE
-                stage('🌐 Déploiement Frontend') {
-                    steps {
-                        script {
-                            echo "🌐 Déploiement du Frontend sur ${env.FRONTEND_IP}"
-
-                            // Vérifier si on a un vrai projet React à déployer
-                            def hasReactApp = fileExists('frontend/package.json')
-
-                            if (hasReactApp && params.DEPLOY_TYPE == 'full') {
-                                echo "🚀 Déploiement d'une application React réelle"
-
-                                dir('frontend') {
-                                    // Build de l'application React
-                                    sh '''
-                                    echo "📦 Installation des dépendances..."
-                                    npm install
-
-                                    echo "🏗️ Construction de l'application..."
-                                    npm run build
-
-                                    echo "📁 Contenu du build:"
-                                    ls -la build/
-                                    '''
-
-                                    // Déploiement sur l'instance frontend
-                                    sh """
-                                    echo "🚀 Déploiement sur le serveur..."
-                                    scp -o StrictHostKeyChecking=no -i ../deploy-key.pem -r build/* ec2-user@${env.FRONTEND_IP}:/var/www/html/
-
-                                    echo "🔧 Configuration Nginx..."
-                                    ssh -o StrictHostKeyChecking=no -i ../deploy-key.pem ec2-user@${env.FRONTEND_IP} "
-                                        sudo systemctl restart nginx
-                                        echo '✅ Frontend déployé avec succès'
-                                    "
-                                    """
-                                }
-                            } else {
-                                echo "📋 Utilisation du frontend exemple (déjà déployé via Terraform)"
+                            dir('backend') {
+                                // Build de l'image Docker
                                 sh """
-                                echo "🌐 Frontend disponible à: http://${env.FRONTEND_IP}"
+                                docker build -t ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-backend:${params.IMAGE_TAG} .
+                                docker tag ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-backend:${params.IMAGE_TAG} ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-backend:latest
+                                """
+
+                                // Sauvegarde de l'image pour Trivy
+                                sh """
+                                docker save -o backend-image.tar ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-backend:${params.IMAGE_TAG}
                                 """
                             }
                         }
                     }
                 }
 
-                // CONFIGURATION ENVIRONNEMENT
-                stage('⚙️ Configuration App') {
+                stage('🌐 Build Frontend') {
                     when {
-                        expression { params.DEPLOY_TYPE == 'full' }
+                        expression { fileExists('frontend/Dockerfile') }
                     }
                     steps {
                         script {
-                            echo "⚙️ Configuration de l'environnement d'application"
+                            echo "🌐 Construction de l'image Frontend..."
 
-                            // Configuration des variables d'environnement backend
-                            sh """
-                            echo "🔧 Configuration du backend..."
-                            ssh -o StrictHostKeyChecking=no -i deploy-key.pem ec2-user@${env.BACKEND_IP} "
-                                cat > /home/ec2-user/app/backend/.env << 'EOL'
-                            NODE_ENV=production
-                            PORT=5000
-                            MONGODB_URI=mongodb://appuser:apppass123@${env.MONGODB_IP}:27017/fullstackapp
-                            FRONTEND_URL=http://${env.FRONTEND_IP}
-                            EOL
+                            dir('frontend') {
+                                // Build de l'image Docker
+                                sh """
+                                docker build -t ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-frontend:${params.IMAGE_TAG} .
+                                docker tag ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-frontend:${params.IMAGE_TAG} ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-frontend:latest
+                                """
 
-                                # Redémarrage de l'application
-                                cd /home/ec2-user/app/backend
-                                pm2 restart backend-api
-                                echo '✅ Backend reconfiguré avec MongoDB'
-                            "
-                            """
+                                // Sauvegarde de l'image pour Trivy
+                                sh """
+                                docker save -o frontend-image.tar ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-frontend:${params.IMAGE_TAG}
+                                """
+                            }
                         }
                     }
                 }
             }
         }
 
-        stage('🧪 3. TESTS AUTOMATISÉS') {
+        stage('🔒 2. SCAN DE SÉCURITÉ TRIVY') {
             when {
-                expression { params.ACTION in ['infra-deploy', 'deploy-only'] }
+                expression {
+                    params.ACTION in ['build-scan', 'security-scan', 'build-deploy'] &&
+                    env.HAS_DOCKER_IMAGES == 'true'
+                }
+            }
+            parallel {
+                stage('🔍 Scan Backend') {
+                    when {
+                        expression { fileExists('backend/Dockerfile') }
+                    }
+                    steps {
+                        script {
+                            echo "🔒 Scan Trivy - Image Backend..."
+
+                            dir('backend') {
+                                // Scan de l'image Docker avec Trivy
+                                sh """
+                                trivy image --format template --template "@html.tpl" -o trivy-backend-report.html ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-backend:${params.IMAGE_TAG}
+                                trivy image --severity CRITICAL,HIGH --exit-code 0 ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-backend:${params.IMAGE_TAG} > trivy-backend-results.txt
+                                """
+
+                                // Analyse des résultats
+                                def trivyOutput = readFile('backend/trivy-backend-results.txt')
+                                env.BACKEND_VULNERABILITIES = trivyOutput
+
+                                // Comptage des vulnérabilités
+                                def criticalCount = trivyOutput.count('CRITICAL')
+                                def highCount = trivyOutput.count('HIGH')
+
+                                echo "📊 Backend - Vulnérabilités: CRITICAL=${criticalCount}, HIGH=${highCount}"
+
+                                if (params.FAIL_ON_VULNERABILITIES && criticalCount > 0) {
+                                    error "❌ Vulnérabilités CRITIQUES détectées dans l'image Backend"
+                                }
+                            }
+                        }
+                    }
+                }
+
+                stage('🔍 Scan Frontend') {
+                    when {
+                        expression { fileExists('frontend/Dockerfile') }
+                    }
+                    steps {
+                        script {
+                            echo "🔒 Scan Trivy - Image Frontend..."
+
+                            dir('frontend') {
+                                // Scan de l'image Docker avec Trivy
+                                sh """
+                                trivy image --format template --template "@html.tpl" -o trivy-frontend-report.html ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-frontend:${params.IMAGE_TAG}
+                                trivy image --severity CRITICAL,HIGH --exit-code 0 ${env.DOCKER_REGISTRY}/${PROJECT_NAME}-frontend:${params.IMAGE_TAG} > trivy-frontend-results.txt
+                                """
+
+                                // Analyse des résultats
+                                def trivyOutput = readFile('frontend/trivy-frontend-results.txt')
+                                env.FRONTEND_VULNERABILITIES = trivyOutput
+
+                                // Comptage des vulnérabilités
+                                def criticalCount = trivyOutput.count('CRITICAL')
+                                def highCount = trivyOutput.count('HIGH')
+
+                                echo "📊 Frontend - Vulnérabilités: CRITICAL=${criticalCount}, HIGH=${highCount}"
+
+                                if (params.FAIL_ON_VULNERABILITIES && criticalCount > 0) {
+                                    error "❌ Vulnérabilités CRITIQUES détectées dans l'image Frontend"
+                                }
+                            }
+                        }
+                    }
+                }
+
+                stage('📋 Scan Fichiers de Configuration') {
+                    steps {
+                        script {
+                            echo "🔒 Scan Trivy - Fichiers de configuration..."
+
+                            // Scan des Dockerfiles
+                            if (fileExists('backend/Dockerfile')) {
+                                sh """
+                                trivy config --severity CRITICAL,HIGH backend/ > trivy-backend-config.txt
+                                """
+                            }
+
+                            if (fileExists('frontend/Dockerfile')) {
+                                sh """
+                                trivy config --severity CRITICAL,HIGH frontend/ > trivy-frontend-config.txt
+                                """
+                            }
+
+                            // Scan des manifests Kubernetes
+                            if (fileExists('kubernetes/')) {
+                                sh """
+                                trivy config --severity CRITICAL,HIGH kubernetes/ > trivy-kubernetes-config.txt
+                                """
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('☸️ 3. SCAN KUBERNETES MANIFESTS') {
+            when {
+                expression {
+                    params.ACTION in ['security-scan', 'build-deploy'] &&
+                    env.HAS_KUBERNETES == 'true'
+                }
             }
             steps {
                 script {
-                    echo "🧪 TESTS AUTOMATISÉS DE L'APPLICATION"
+                    echo "🔒 Scan Trivy - Manifests Kubernetes..."
 
-                    dir('tests') {
-                        // Test Backend API
+                    dir('kubernetes') {
+                        // Scan de sécurité des manifests Kubernetes
                         sh """
-                        echo "🔍 Test Backend API..."
-                        for i in {1::10}; do
-                            if curl -f -s http://${env.BACKEND_IP}:5000/api/health; then
-                                echo "✅ Backend API fonctionnel"
-                                break
-                            else
-                                echo "⏳ Backend non disponible, essai \$i/10..."
-                                sleep 10
-                            fi
-                        done
+                        trivy k8s --report summary cluster \
+                            --format template \
+                            --template "@html.tpl" \
+                            -o trivy-kubernetes-report.html \
+                            --timeout 10m
                         """
 
-                        // Test Frontend
+                        // Scan des fichiers YAML individuels
                         sh """
-                        echo "🔍 Test Frontend..."
-                        if curl -f -s http://${env.FRONTEND_IP} > /dev/null; then
-                            echo "✅ Frontend accessible"
-                        else
-                            echo "❌ Frontend inaccessible"
+                        find . -name "*.yaml" -o -name "*.yml" | xargs -I {} trivy config {} > trivy-k8s-manifests.txt
+                        """
+                    }
+
+                    // Analyse des résultats Kubernetes
+                    if (fileExists('kubernetes/trivy-k8s-manifests.txt')) {
+                        def k8sResults = readFile('kubernetes/trivy-k8s-manifests.txt')
+                        env.KUBERNETES_VULNERABILITIES = k8sResults
+
+                        def k8sCriticalCount = k8sResults.count('CRITICAL')
+                        def k8sHighCount = k8sResults.count('HIGH')
+
+                        echo "📊 Kubernetes - Vulnérabilités: CRITICAL=${k8sCriticalCount}, HIGH=${k8sHighCount}"
+
+                        if (params.FAIL_ON_VULNERABILITIES && k8sCriticalCount > 0) {
+                            error "❌ Vulnérabilités CRITIQUES dans les manifests Kubernetes"
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('🚀 4. DÉPLOIEMENT KUBERNETES') {
+            when {
+                expression {
+                    params.ACTION in ['build-deploy', 'deploy-only'] &&
+                    env.HAS_KUBERNETES == 'true'
+                }
+            }
+            steps {
+                script {
+                    echo "🚀 Déploiement sur Kubernetes..."
+
+                    withCredentials([
+                        file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')
+                    ]) {
+                        sh """
+                        export KUBECONFIG=${KUBECONFIG_FILE}
+
+                        # Création du namespace si nécessaire
+                        kubectl create namespace ${env.KUBERNETES_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+
+                        # Déploiement des applications
+                        if [ -f "kubernetes/backend-deployment.yaml" ]; then
+                            kubectl apply -n ${env.KUBERNETES_NAMESPACE} -f kubernetes/backend-deployment.yaml
                         fi
-                        """
 
-                        // Test complet de l'application
-                        sh """
-                        echo "🔍 Test complet de l'application..."
-                        curl -s http://${env.BACKEND_IP}:5000/api/info | grep -q "Backend Server Information" && echo "✅ Application complète fonctionnelle" || echo "⚠️ Application partiellement fonctionnelle"
+                        if [ -f "kubernetes/frontend-deployment.yaml" ]; then
+                            kubectl apply -n ${env.KUBERNETES_NAMESPACE} -f kubernetes/frontend-deployment.yaml
+                        fi
+
+                        if [ -f "kubernetes/database-deployment.yaml" ] && [ "${params.DEPLOY_TYPE}" != "basic" ]; then
+                            kubectl apply -n ${env.KUBERNETES_NAMESPACE} -f kubernetes/database-deployment.yaml
+                        fi
+
+                        # Déploiement des services
+                        if [ -f "kubernetes/services.yaml" ]; then
+                            kubectl apply -n ${env.KUBERNETES_NAMESPACE} -f kubernetes/services.yaml
+                        fi
+
+                        echo "✅ Déploiement Kubernetes terminé"
                         """
                     }
                 }
             }
         }
 
-        stage('📋 4. RAPPORT FINAL') {
+        stage('🧪 5. TESTS ET VÉRIFICATIONS') {
+            when {
+                expression { params.ACTION in ['build-deploy', 'deploy-only'] }
+            }
             steps {
                 script {
-                    echo "📋 CRÉATION DU RAPPORT DE DÉPLOIEMENT"
+                    echo "🧪 Tests et vérifications post-déploiement..."
 
-                    def deploymentReport = """
-                    🎉 DÉPLOIEMENT FULLSTACK TERMINÉ 🎉
-                    ===================================
+                    withCredentials([
+                        file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG_FILE')
+                    ]) {
+                        sh """
+                        export KUBECONFIG=${KUBECONFIG_FILE}
+
+                        # Vérification du statut des pods
+                        echo "📊 Statut des pods:"
+                        kubectl get pods -n ${env.KUBERNETES_NAMESPACE}
+
+                        # Attente que les pods soient prêts
+                        echo "⏳ Attente du déploiement..."
+                        kubectl wait --for=condition=ready pod -l app=backend -n ${env.KUBERNETES_NAMESPACE} --timeout=300s
+                        kubectl wait --for=condition=ready pod -l app=frontend -n ${env.KUBERNETES_NAMESPACE} --timeout=300s
+
+                        # Tests de santé
+                        echo "🔍 Tests de santé..."
+                        kubectl get svc -n ${env.KUBERNETES_NAMESPACE}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('📋 6. RAPPORT DE SÉCURITÉ') {
+            steps {
+                script {
+                    echo "📋 GÉNÉRATION DU RAPPORT DE SÉCURITÉ"
+
+                    def securityReport = """
+                    🔒 RAPPORT DE SÉCURITÉ TRIVY
+                    ============================
 
                     📅 Date: ${new Date().format('yyyy-MM-dd HH:mm:ss')}
                     🎯 Type: ${params.DEPLOY_TYPE}
                     🔧 Action: ${params.ACTION}
+                    🐳 Image Tag: ${params.IMAGE_TAG}
 
-                    🌐 URLS DE L'APPLICATION:
-                    ========================
-                    Frontend:    http://${env.FRONTEND_IP}
-                    Backend API: http://${env.BACKEND_IP}:5000
-                    MongoDB:     ${env.MONGODB_IP}:27017
+                    📊 RÉSULTATS DES SCANS:
+                    =====================
 
-                    🔗 TESTS RAPIDES:
-                    ================
-                    • Frontend:    curl -I http://${env.FRONTEND_IP}
-                    • Backend:     curl http://${env.BACKEND_IP}:5000/api/health
-                    • Application: curl http://${env.BACKEND_IP}:5000/api/info
+                    BACKEND:
+                    ${env.BACKEND_VULNERABILITIES ?: 'Aucun scan effectué'}
 
-                    🔐 ACCÈS SSH:
-                    ============
-                    Backend:  ssh -i deploy-key.pem ec2-user@${env.BACKEND_IP}
-                    Frontend: ssh -i deploy-key.pem ec2-user@${env.FRONTEND_IP}
-                    MongoDB:  ssh -i deploy-key.pem ec2-user@${env.MONGODB_IP}
+                    FRONTEND:
+                    ${env.FRONTEND_VULNERABILITIES ?: 'Aucun scan effectué'}
 
-                    📊 BASE DE DONNÉES:
-                    ==================
-                    • URL: mongodb://appuser:apppass123@${env.MONGODB_IP}:27017/fullstackapp
-                    • Admin: mongodb://admin:mongodb123@${env.MONGODB_IP}:27017/admin
+                    KUBERNETES:
+                    ${env.KUBERNETES_VULNERABILITIES ?: 'Aucun scan effectué'}
 
-                    ⚠️  INFORMATIONS SANDBOX:
-                    ========================
-                    • Les credentials AWS expirent rapidement
-                    • Sauvegardez la clé SSH (deploy-key.pem)
-                    • Testez rapidement votre application
+                    ⚠️  RECOMMANDATIONS:
+                    ===================
+                    • Mettre à jour les images de base
+                    • Corriger les vulnérabilités CRITICAL/HIGH
+                    • Réviser les configurations Kubernetes
+                    • Mettre à jour les dépendances
 
                     ✅ PROCHAINES ÉTAPES:
                     ====================
-                    1. Visitez http://${env.FRONTEND_IP}
-                    2. Testez l'API Backend
-                    3. Vérifiez les logs si nécessaire
-                    4. Détruisez l'infra après tests
+                    1. Examiner les rapports HTML détaillés
+                    2. Corriger les vulnérabilités critiques
+                    3. Relancer le scan après corrections
+                    4. Déployer en production après validation
                     """
 
-                    writeFile file: 'deployment-report.txt', text: deploymentReport
+                    writeFile file: 'security-report.txt', text: securityReport
 
-                    // Mise à jour de la description du build
-                    currentBuild.description = "Deployed - Frontend: ${env.FRONTEND_IP}"
+                    // Génération d'un rapport consolidé
+                    sh """
+                    echo "🔒 RAPPORT CONSOLIDÉ DE SÉCURITÉ" > consolidated-security-report.txt
+                    echo "================================" >> consolidated-security-report.txt
+                    echo "" >> consolidated-security-report.txt
+
+                    if [ -f "backend/trivy-backend-results.txt" ]; then
+                        echo "📋 BACKEND:" >> consolidated-security-report.txt
+                        cat backend/trivy-backend-results.txt >> consolidated-security-report.txt
+                        echo "" >> consolidated-security-report.txt
+                    fi
+
+                    if [ -f "frontend/trivy-frontend-results.txt" ]; then
+                        echo "📋 FRONTEND:" >> consolidated-security-report.txt
+                        cat frontend/trivy-frontend-results.txt >> consolidated-security-report.txt
+                        echo "" >> consolidated-security-report.txt
+                    fi
+
+                    if [ -f "kubernetes/trivy-k8s-manifests.txt" ]; then
+                        echo "📋 KUBERNETES:" >> consolidated-security-report.txt
+                        cat kubernetes/trivy-k8s-manifests.txt >> consolidated-security-report.txt
+                    fi
+                    """
                 }
             }
             post {
-                success {
-                    archiveArtifacts artifacts: 'deployment-report.txt', fingerprint: true
-                    archiveArtifacts artifacts: 'infrastructure-info.txt', fingerprint: true
-                    archiveArtifacts artifacts: 'deploy-key.pem', fingerprint: true
-                    archiveArtifacts artifacts: 'infrastructure-outputs.json', fingerprint: true
-                }
-            }
-        }
-
-        stage('🗑️ DESTRUCTION') {
-            when {
-                expression { params.ACTION == 'destroy' }
-            }
-            steps {
-                script {
-                    echo "🚨 DESTRUCTION DE L'INFRASTRUCTURE"
-
-                    input(
-                        message: "CONFIRMER LA DESTRUCTION COMPLÈTE?",
-                        ok: "DÉTRUIRE",
-                        parameters: [
-                            text(
-                                name: 'CONFIRM_DESTROY',
-                                defaultValue: 'DESTROY',
-                                description: 'Tapez DESTROY pour confirmer'
-                            )
-                        ]
-                    )
-                }
-
-                withCredentials([
-                    string(credentialsId: 'aws-access-key-id', variable: 'AWS_ACCESS_KEY_ID'),
-                    string(credentialsId: 'aws-secret-access-key', variable: 'AWS_SECRET_ACCESS_KEY'),
-                    string(credentialsId: 'aws-session-token', variable: 'AWS_SESSION_TOKEN')
-                ]) {
-                    dir('terraform') {
-                        sh '''
-                        export AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
-                        export AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
-                        export AWS_SESSION_TOKEN=$AWS_SESSION_TOKEN
-                        export AWS_DEFAULT_REGION=us-west-2
-
-                        echo "🗑️ Destruction de l'infrastructure..."
-                        terraform destroy -auto-approve
-                        '''
-                    }
+                always {
+                    archiveArtifacts artifacts: 'security-report.txt', fingerprint: true
+                    archiveArtifacts artifacts: 'consolidated-security-report.txt', fingerprint: true
+                    archiveArtifacts artifacts: 'backend/trivy-backend-report.html', fingerprint: true
+                    archiveArtifacts artifacts: 'frontend/trivy-frontend-report.html', fingerprint: true
+                    archiveArtifacts artifacts: 'kubernetes/trivy-kubernetes-report.html', fingerprint: true
                 }
             }
         }
@@ -464,26 +440,38 @@ pipeline {
         always {
             echo "🔧 NETTOYAGE"
             sh '''
-            rm -rf terraform/.terraform* || true
-            rm -rf terraform/tfplan || true
+            # Nettoyage des images temporaires
+            docker image prune -f || true
+
+            # Suppression des fichiers temporaires
+            rm -f backend/backend-image.tar || true
+            rm -f frontend/frontend-image.tar || true
+            rm -f backend/trivy-backend-results.txt || true
+            rm -f frontend/trivy-frontend-results.txt || true
             '''
         }
 
         success {
             script {
-                if (params.ACTION != 'destroy') {
+                if (params.ACTION != 'security-scan') {
                     echo "🎉 DÉPLOIEMENT RÉUSSI!"
-                    echo "🌐 Votre application est disponible: http://${env.FRONTEND_IP}"
-                    echo "📋 Téléchargez le rapport de déploiement pour plus d'informations"
+                    echo "🔒 Rapports de sécurité générés"
+                    echo "📋 Téléchargez les rapports pour plus d'informations"
                 } else {
-                    echo "🗑️ INFRASTRUCTURE DÉTRUITE"
+                    echo "🔒 SCAN DE SÉCURITÉ TERMINÉ"
+                    echo "📊 Vulnérabilités analysées avec succès"
                 }
             }
         }
 
         failure {
-            echo "❌ ÉCHEC - CREDENTIALS EXPIRÉS OU ERREUR DÉPLOIEMENT"
-            echo "💡 Solution: Obtenez de nouvelles credentials et relancez"
+            echo "❌ ÉCHEC - VULNÉRABILITÉS CRITIQUES OU ERREUR DÉPLOIEMENT"
+            echo "💡 Solution: Corriger les vulnérabilités identifiées par Trivy"
+        }
+
+        unstable {
+            echo "⚠️  BUILD INSTABLE - VULNÉRABILITÉS DÉTECTÉES"
+            echo "📋 Consultez le rapport de sécurité pour les détails"
         }
     }
 }
