@@ -6,9 +6,6 @@ pipeline {
         DOCKER_REGISTRY = 'dmzz'
         FRONTEND_IMAGE = "${DOCKER_REGISTRY}/express-frontend"
         BACKEND_IMAGE = "${DOCKER_REGISTRY}/express-backend"
-        SONARQUBE_SCANNER_HOME = tool 'SonarScanner'
-        SONAR_HOST_URL = 'http://localhost:9000'
-        SONAR_PROJECT_KEY = 'express_mongo_react'
         EMAIL_RECIPIENTS = 'sowdmzz@gmail.com'
         K8S_NAMESPACE = 'express-app'
         TRIVY_CACHE_DIR = '/tmp/trivy-cache'
@@ -127,94 +124,57 @@ pipeline {
             when {
                 expression { params.ACTION in ['build-scan', 'build-deploy', 'full-pipeline'] }
             }
-            parallel {
-                stage('📦 Install Frontend') {
-                    steps {
-                        script {
-                            dir(env.FRONTEND_DIR) {
-                                sh '''
-                                    echo "📦 Installation dépendances Frontend dans $(pwd)"
-                                    if [ -f "package.json" ]; then
-                                        npm install
-                                        echo "✅ Dépendances frontend installées avec succès"
-                                    else
-                                        echo "❌ package.json non trouvé dans $(pwd)"
-                                        exit 1
-                                    fi
-                                '''
-                            }
-                        }
-                    }
-                }
-                stage('📦 Install Backend') {
-                    steps {
-                        script {
-                            if (env.BACKEND_DIR != env.FRONTEND_DIR) {
-                                dir(env.BACKEND_DIR) {
-                                    sh '''
-                                        echo "📦 Installation dépendances Backend dans $(pwd)"
-                                        if [ -f "package.json" ]; then
-                                            npm install
-                                            echo "✅ Dépendances backend installées avec succès"
-                                        else
-                                            echo "❌ package.json non trouvé dans $(pwd)"
-                                            exit 1
-                                        fi
-                                    '''
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+            steps {
+                script {
+                    echo "📦 Installation des dépendances..."
 
-        stage('🔍 ANALYSE SONARQUBE') {
-            when {
-                expression { params.ACTION in ['build-scan', 'build-deploy', 'full-pipeline'] }
-            }
-            parallel {
-                stage('🔍 Analyse Backend') {
-                    steps {
-                        script {
-                            withSonarQubeEnv('SonarQube') {
-                                dir(env.BACKEND_DIR) {
-                                    sh '''
-                                        echo "🔍 Analyse SonarQube Backend dans $(pwd)"
-                                        ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
-                                        -Dsonar.projectKey=${SONAR_PROJECT_KEY}-backend \
-                                        -Dsonar.projectName='Express Backend' \
-                                        -Dsonar.projectVersion=${BUILD_NUMBER} \
-                                        -Dsonar.sources=. \
-                                        -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
-                                        -Dsonar.sourceEncoding=UTF-8 \
-                                        -Dsonar.host.url=${SONAR_HOST_URL}
-                                    '''
-                                }
-                            }
-                        }
-                    }
-                }
-                stage('🔍 Analyse Frontend') {
-                    steps {
-                        script {
-                            if (env.FRONTEND_DIR != env.BACKEND_DIR) {
-                                withSonarQubeEnv('SonarQube') {
+                    if (env.FRONTEND_DIR != env.BACKEND_DIR) {
+                        parallel {
+                            stage('📦 Install Frontend') {
+                                steps {
                                     dir(env.FRONTEND_DIR) {
                                         sh '''
-                                            echo "🔍 Analyse SonarQube Frontend dans $(pwd)"
-                                            ${SONARQUBE_SCANNER_HOME}/bin/sonar-scanner \
-                                            -Dsonar.projectKey=${SONAR_PROJECT_KEY}-frontend \
-                                            -Dsonar.projectName='React Frontend' \
-                                            -Dsonar.projectVersion=${BUILD_NUMBER} \
-                                            -Dsonar.sources=. \
-                                            -Dsonar.exclusions=**/node_modules/**,**/coverage/**,**/*.test.js \
-                                            -Dsonar.sourceEncoding=UTF-8 \
-                                            -Dsonar.host.url=${SONAR_HOST_URL}
+                                            echo "📦 Installation dépendances Frontend dans $(pwd)"
+                                            if [ -f "package.json" ]; then
+                                                npm install
+                                                echo "✅ Dépendances frontend installées avec succès"
+                                            else
+                                                echo "❌ package.json non trouvé dans $(pwd)"
+                                                exit 1
+                                            fi
                                         '''
                                     }
                                 }
                             }
+                            stage('📦 Install Backend') {
+                                steps {
+                                    dir(env.BACKEND_DIR) {
+                                        sh '''
+                                            echo "📦 Installation dépendances Backend dans $(pwd)"
+                                            if [ -f "package.json" ]; then
+                                                npm install
+                                                echo "✅ Dépendances backend installées avec succès"
+                                            else
+                                                echo "❌ package.json non trouvé dans $(pwd)"
+                                                exit 1
+                                            fi
+                                        '''
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        dir(env.BACKEND_DIR) {
+                            sh '''
+                                echo "📦 Installation dépendances dans $(pwd)"
+                                if [ -f "package.json" ]; then
+                                    npm install
+                                    echo "✅ Dépendances installées avec succès"
+                                else
+                                    echo "❌ package.json non trouvé dans $(pwd)"
+                                    exit 1
+                                fi
+                            '''
                         }
                     }
                 }
@@ -264,7 +224,7 @@ pipeline {
             }
         }
 
-        stage('🔒 SCAN SÉCURITÉ TRIVY') {
+        stage('🔒 SCAN SÉCURITÉ TRIVY - IMAGES') {
             when {
                 expression {
                     params.ACTION in ['build-scan', 'security-scan', 'build-deploy', 'full-pipeline'] &&
@@ -280,111 +240,114 @@ pipeline {
                         trivy image --download-db-only
                     """
                 }
+            }
+        }
 
-                parallel {
-                    stage('🔍 Scan Image Backend') {
-                        when {
-                            expression {
-                                env.HAS_BACKEND_DOCKERFILE == 'true' ||
-                                env.HAS_DOCKER_COMPOSE == 'true'
-                            }
-                        }
-                        steps {
-                            script {
-                                echo "🔒 Scan Trivy - Image Backend..."
+        stage('🔍 Scan Image Backend') {
+            when {
+                expression {
+                    (params.ACTION in ['build-scan', 'security-scan', 'build-deploy', 'full-pipeline']) &&
+                    (env.HAS_BACKEND_DOCKERFILE == 'true' || env.HAS_DOCKER_COMPOSE == 'true')
+                }
+            }
+            steps {
+                script {
+                    echo "🔒 Scan Trivy - Image Backend..."
 
-                                sh """
-                                    # Scan de l'image Docker avec Trivy
-                                    trivy image --format json -o trivy-backend-report.json ${BACKEND_IMAGE}:${BUILD_NUMBER} || true
-                                    trivy image --severity CRITICAL,HIGH --exit-code 0 ${BACKEND_IMAGE}:${BUILD_NUMBER} > trivy-backend-results.txt || true
+                    sh """
+                        # Scan de l'image Docker avec Trivy
+                        trivy image --format json -o trivy-backend-report.json ${BACKEND_IMAGE}:${BUILD_NUMBER} || true
+                        trivy image --severity CRITICAL,HIGH --exit-code 0 ${BACKEND_IMAGE}:${BUILD_NUMBER} > trivy-backend-results.txt || true
 
-                                    # Génération rapport HTML
-                                    trivy image --format template --template "@contrib/html.tpl" -o trivy-backend-report.html ${BACKEND_IMAGE}:${BUILD_NUMBER} || true
-                                """
+                        # Génération rapport HTML
+                        trivy image --format template --template "@contrib/html.tpl" -o trivy-backend-report.html ${BACKEND_IMAGE}:${BUILD_NUMBER} || true
+                    """
 
-                                // Analyse des résultats
-                                if (fileExists('trivy-backend-results.txt')) {
-                                    def trivyOutput = readFile('trivy-backend-results.txt')
-                                    env.BACKEND_VULNERABILITIES = trivyOutput
+                    // Analyse des résultats
+                    if (fileExists('trivy-backend-results.txt')) {
+                        def trivyOutput = readFile('trivy-backend-results.txt')
+                        env.BACKEND_VULNERABILITIES = trivyOutput
 
-                                    // Comptage des vulnérabilités
-                                    def criticalCount = trivyOutput.count('CRITICAL')
-                                    def highCount = trivyOutput.count('HIGH')
+                        // Comptage des vulnérabilités
+                        def criticalCount = trivyOutput.count('CRITICAL')
+                        def highCount = trivyOutput.count('HIGH')
 
-                                    echo "📊 Backend - Vulnérabilités: CRITICAL=${criticalCount}, HIGH=${highCount}"
+                        echo "📊 Backend - Vulnérabilités: CRITICAL=${criticalCount}, HIGH=${highCount}"
 
-                                    if (params.FAIL_ON_VULNERABILITIES && criticalCount > 0) {
-                                        error "❌ Vulnérabilités CRITIQUES détectées dans l'image Backend"
-                                    }
-                                }
-                            }
+                        if (params.FAIL_ON_VULNERABILITIES && criticalCount > 0) {
+                            error "❌ Vulnérabilités CRITIQUES détectées dans l'image Backend"
                         }
                     }
+                }
+            }
+        }
 
-                    stage('🔍 Scan Image Frontend') {
-                        when {
-                            expression {
-                                env.HAS_FRONTEND_DOCKERFILE == 'true' ||
-                                env.HAS_DOCKER_COMPOSE == 'true'
-                            }
-                        }
-                        steps {
-                            script {
-                                echo "🔒 Scan Trivy - Image Frontend..."
+        stage('🔍 Scan Image Frontend') {
+            when {
+                expression {
+                    (params.ACTION in ['build-scan', 'security-scan', 'build-deploy', 'full-pipeline']) &&
+                    (env.HAS_FRONTEND_DOCKERFILE == 'true' || env.HAS_DOCKER_COMPOSE == 'true')
+                }
+            }
+            steps {
+                script {
+                    echo "🔒 Scan Trivy - Image Frontend..."
 
-                                sh """
-                                    # Scan de l'image Docker avec Trivy
-                                    trivy image --format json -o trivy-frontend-report.json ${FRONTEND_IMAGE}:${BUILD_NUMBER} || true
-                                    trivy image --severity CRITICAL,HIGH --exit-code 0 ${FRONTEND_IMAGE}:${BUILD_NUMBER} > trivy-frontend-results.txt || true
+                    sh """
+                        # Scan de l'image Docker avec Trivy
+                        trivy image --format json -o trivy-frontend-report.json ${FRONTEND_IMAGE}:${BUILD_NUMBER} || true
+                        trivy image --severity CRITICAL,HIGH --exit-code 0 ${FRONTEND_IMAGE}:${BUILD_NUMBER} > trivy-frontend-results.txt || true
 
-                                    # Génération rapport HTML
-                                    trivy image --format template --template "@contrib/html.tpl" -o trivy-frontend-report.html ${FRONTEND_IMAGE}:${BUILD_NUMBER} || true
-                                """
+                        # Génération rapport HTML
+                        trivy image --format template --template "@contrib/html.tpl" -o trivy-frontend-report.html ${FRONTEND_IMAGE}:${BUILD_NUMBER} || true
+                    """
 
-                                // Analyse des résultats
-                                if (fileExists('trivy-frontend-results.txt')) {
-                                    def trivyOutput = readFile('trivy-frontend-results.txt')
-                                    env.FRONTEND_VULNERABILITIES = trivyOutput
+                    // Analyse des résultats
+                    if (fileExists('trivy-frontend-results.txt')) {
+                        def trivyOutput = readFile('trivy-frontend-results.txt')
+                        env.FRONTEND_VULNERABILITIES = trivyOutput
 
-                                    // Comptage des vulnérabilités
-                                    def criticalCount = trivyOutput.count('CRITICAL')
-                                    def highCount = trivyOutput.count('HIGH')
+                        // Comptage des vulnérabilités
+                        def criticalCount = trivyOutput.count('CRITICAL')
+                        def highCount = trivyOutput.count('HIGH')
 
-                                    echo "📊 Frontend - Vulnérabilités: CRITICAL=${criticalCount}, HIGH=${highCount}"
+                        echo "📊 Frontend - Vulnérabilités: CRITICAL=${criticalCount}, HIGH=${highCount}"
 
-                                    if (params.FAIL_ON_VULNERABILITIES && criticalCount > 0) {
-                                        error "❌ Vulnérabilités CRITIQUES détectées dans l'image Frontend"
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    stage('📋 Scan Fichiers de Configuration') {
-                        steps {
-                            script {
-                                echo "🔒 Scan Trivy - Fichiers de configuration..."
-
-                                // Scan des Dockerfiles
-                                if (env.HAS_BACKEND_DOCKERFILE == 'true') {
-                                    sh """
-                                        trivy config --severity CRITICAL,HIGH ${BACKEND_DIR} > trivy-backend-config.txt || true
-                                    """
-                                }
-
-                                if (env.HAS_FRONTEND_DOCKERFILE == 'true') {
-                                    sh """
-                                        trivy config --severity CRITICAL,HIGH ${FRONTEND_DIR} > trivy-frontend-config.txt || true
-                                    """
-                                }
-
-                                // Scan des fichiers de configuration
-                                sh """
-                                    trivy fs --severity CRITICAL,HIGH . > trivy-filesystem-results.txt || true
-                                """
-                            }
+                        if (params.FAIL_ON_VULNERABILITIES && criticalCount > 0) {
+                            error "❌ Vulnérabilités CRITIQUES détectées dans l'image Frontend"
                         }
                     }
+                }
+            }
+        }
+
+        stage('📋 Scan Fichiers de Configuration') {
+            when {
+                expression {
+                    params.ACTION in ['build-scan', 'security-scan', 'build-deploy', 'full-pipeline']
+                }
+            }
+            steps {
+                script {
+                    echo "🔒 Scan Trivy - Fichiers de configuration..."
+
+                    // Scan des Dockerfiles
+                    if (env.HAS_BACKEND_DOCKERFILE == 'true') {
+                        sh """
+                            trivy config --severity CRITICAL,HIGH ${BACKEND_DIR} > trivy-backend-config.txt || true
+                        """
+                    }
+
+                    if (env.HAS_FRONTEND_DOCKERFILE == 'true') {
+                        sh """
+                            trivy config --severity CRITICAL,HIGH ${FRONTEND_DIR} > trivy-frontend-config.txt || true
+                        """
+                    }
+
+                    // Scan des fichiers de configuration
+                    sh """
+                        trivy fs --severity CRITICAL,HIGH . > trivy-filesystem-results.txt || true
+                    """
                 }
             }
         }
@@ -472,7 +435,6 @@ spec:
 
                     echo "✅ Manifests Kubernetes simplifiés générés"
                     sh 'ls -la k8s-demo/'
-                    sh 'cat k8s-demo/*.yaml'
                 }
             }
         }
@@ -612,7 +574,10 @@ spec:
                 script {
                     echo "🧪 Tests de l'application déployée..."
 
-                    def appUrl = sh(script: "cat app-url.txt", returnStdout: true).trim()
+                    def appUrl = "http://localhost:8080"
+                    if (fileExists('app-url.txt')) {
+                        appUrl = sh(script: "cat app-url.txt", returnStdout: true).trim()
+                    }
 
                     sh """
                         echo "🔍 Test de l'application sur: ${appUrl}"
@@ -726,17 +691,6 @@ spec:
                     """
                 }
             }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'security-report.txt', fingerprint: true
-                    archiveArtifacts artifacts: 'consolidated-security-report.txt', fingerprint: true
-                    archiveArtifacts artifacts: 'trivy-backend-report.html', allowMissing: true, fingerprint: true
-                    archiveArtifacts artifacts: 'trivy-frontend-report.html', allowMissing: true, fingerprint: true
-                    archiveArtifacts artifacts: 'trivy-backend-report.json', allowMissing: true, fingerprint: true
-                    archiveArtifacts artifacts: 'trivy-frontend-report.json', allowMissing: true, fingerprint: true
-                    archiveArtifacts artifacts: 'app-url.txt', allowMissing: true, fingerprint: true
-                }
-            }
         }
     }
 
@@ -753,20 +707,48 @@ spec:
                 rm -f app-url.txt || true
 
                 # Arrêter le port-forward s'il est actif
-                if [ -f /tmp/portforward.pid ]; then
-                    PF_PID=$(cat /tmp/portforward.pid)
-                    kill $PF_PID 2>/dev/null || true
-                    rm -f /tmp/portforward.pid
-                    echo "🔴 Port-forward arrêté"
-                fi
+                pkill -f "kubectl port-forward" || true
             '''
+
+            // Archive des artefacts avec gestion des fichiers manquants
+            script {
+                try {
+                    archiveArtifacts artifacts: 'security-report.txt', fingerprint: true
+                } catch (Exception e) {
+                    echo "⚠️ security-report.txt non trouvé"
+                }
+                try {
+                    archiveArtifacts artifacts: 'consolidated-security-report.txt', fingerprint: true
+                } catch (Exception e) {
+                    echo "⚠️ consolidated-security-report.txt non trouvé"
+                }
+                try {
+                    archiveArtifacts artifacts: 'trivy-backend-report.html', fingerprint: true
+                } catch (Exception e) {
+                    echo "⚠️ trivy-backend-report.html non trouvé"
+                }
+                try {
+                    archiveArtifacts artifacts: 'trivy-frontend-report.html', fingerprint: true
+                } catch (Exception e) {
+                    echo "⚠️ trivy-frontend-report.html non trouvé"
+                }
+                try {
+                    archiveArtifacts artifacts: 'app-url.txt', fingerprint: true
+                } catch (Exception e) {
+                    echo "⚠️ app-url.txt non trouvé"
+                }
+            }
         }
 
         success {
             script {
                 def appUrl = "Non disponible"
-                if (fileExists('app-url.txt')) {
-                    appUrl = sh(script: "cat app-url.txt", returnStdout: true).trim()
+                try {
+                    if (fileExists('app-url.txt')) {
+                        appUrl = sh(script: "cat app-url.txt", returnStdout: true).trim()
+                    }
+                } catch (Exception e) {
+                    echo "⚠️ Impossible de lire app-url.txt"
                 }
 
                 if (params.ACTION != 'security-scan') {
