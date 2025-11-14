@@ -405,24 +405,24 @@ spec:
                         kubectl apply -f k8s-demo/service.yaml || echo "Échec déploiement Service"
                     """
 
-                    // Attente du démarrage
-                    sh """
+                    // Attente du démarrage - VERSION CORRIGÉE
+                    sh '''
                         echo "⏳ Attente du démarrage des pods..."
                         for i in {1..12}; do
-                            READY=\$(kubectl get deployment nginx-deployment -n ${K8S_NAMESPACE} -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
-                            DESIRED=\$(kubectl get deployment nginx-deployment -n ${K8S_NAMESPACE} -o jsonpath='{.status.replicas}' 2>/dev/null || echo "0")
+                            READY=$(kubectl get deployment nginx-deployment -n ''' + env.K8S_NAMESPACE + ''' -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+                            DESIRED=$(kubectl get deployment nginx-deployment -n ''' + env.K8S_NAMESPACE + ''' -o jsonpath='{.status.replicas}' 2>/dev/null || echo "0")
                             
-                            if [ "\\$READY" = "\\$DESIRED" ] && [ "\\$DESIRED" -gt 0 ]; then
+                            if [ "$READY" = "$DESIRED" ] && [ "$DESIRED" -gt 0 ]; then
                                 echo "✅ Tous les pods sont prêts"
                                 break
                             fi
-                            echo "⏳ Pods prêts: \\$READY/\\$DESIRED (essai \$i/12)"
+                            echo "⏳ Pods prêts: $READY/$DESIRED (essai $i/12)"
                             sleep 5
                         done
-                    """
+                    '''
 
                     // Affichage des informations
-                    sh '''
+                    sh """
                         echo "📊 État final du déploiement:"
                         echo ""
                         echo "📦 Deployments:"
@@ -433,23 +433,23 @@ spec:
                         echo ""
                         echo "🐛 Pods:"
                         kubectl get pods -n ${K8S_NAMESPACE} -o wide || echo "Impossible de récupérer les pods"
-                    '''
+                    """
 
-                    // Récupération de l'URL d'accès
-                    sh """
+                    // Récupération de l'URL d'accès - VERSION CORRIGÉE
+                    sh '''
                         echo "🌐 Récupération de l'URL d'accès..."
-                        EXTERNAL_IP=\$(kubectl get svc nginx-service -n ${K8S_NAMESPACE} -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
+                        EXTERNAL_IP=$(kubectl get svc nginx-service -n ''' + env.K8S_NAMESPACE + ''' -o jsonpath='{.status.loadBalancer.ingress[0].ip}' 2>/dev/null)
                         
-                        if [ -n "\\$EXTERNAL_IP" ]; then
-                            echo "🎯 Application accessible à: http://\\$EXTERNAL_IP"
-                            echo "http://\\$EXTERNAL_IP" > app-url.txt
+                        if [ -n "$EXTERNAL_IP" ]; then
+                            echo "🎯 Application accessible à: http://$EXTERNAL_IP"
+                            echo "http://$EXTERNAL_IP" > app-url.txt
                         else
                             echo "🔧 Configuration du port-forward temporaire..."
-                            kubectl port-forward svc/nginx-service 8080:80 -n ${K8S_NAMESPACE} --address=0.0.0.0 &
+                            kubectl port-forward svc/nginx-service 8080:80 -n ''' + env.K8S_NAMESPACE + ''' --address=0.0.0.0 &
                             echo "🎯 Application accessible à: http://localhost:8080"
                             echo "http://localhost:8080" > app-url.txt
                         fi
-                    """
+                    '''
                 }
             }
         }
@@ -467,18 +467,14 @@ spec:
                         appUrl = sh(script: "cat app-url.txt", returnStdout: true).trim()
                     }
                     
+                    // Test simplifié sans problèmes d'échappement
                     sh """
                         echo "🔍 Test de l'application sur: ${appUrl}"
                         echo "⏳ Attente supplémentaire pour le démarrage..."
                         sleep 10
                         
-                        # Test de connectivité
-                        if curl -f -s --connect-timeout 30 "${appUrl}" > /dev/null; then
-                            echo "✅ Application accessible avec succès"
-                        else
-                            echo "⚠️  Application non accessible, vérification des logs..."
-                            kubectl logs -n ${K8S_NAMESPACE} deployment/nginx-deployment --tail=10 || echo "Impossible de récupérer les logs"
-                        fi
+                        # Test de connectivité simple
+                        curl -f -s --connect-timeout 30 "${appUrl}" && echo "✅ Application accessible avec succès" || echo "⚠️ Application non accessible"
                     """
                 }
             }
