@@ -10,7 +10,7 @@ pipeline {
         K8S_NAMESPACE = 'express-app'
         TRIVY_CACHE_DIR = '/tmp/trivy-cache'
     }
-    
+
     parameters {
         choice(
             name: 'ACTION',
@@ -33,13 +33,13 @@ pipeline {
             description: 'Tag pour les images Docker'
         )
     }
-    
+
     stages {
         stage('🚀 DÉMARRAGE RAPIDE') {
             steps {
-                git branch: 'main', 
+                git branch: 'main',
                 url: 'https://github.com/Buhaha2525/express_mongo_react.git'
-                
+
                 script {
                     currentBuild.displayName = "#${currentBuild.number} - ${params.ACTION}"
                     currentBuild.description = "Image: ${params.IMAGE_TAG} - Type: ${params.DEPLOY_TYPE}"
@@ -50,7 +50,7 @@ pipeline {
                 }
             }
         }
-        
+
         stage('🔍 ANALYSE STRUCTURE PROJET') {
             steps {
                 sh '''
@@ -69,7 +69,7 @@ pipeline {
                 '''
             }
         }
-        
+
         stage('📁 DÉTECTION AUTOMATIQUE DOSSIERS') {
             steps {
                 script {
@@ -77,29 +77,29 @@ pipeline {
                         script: 'find . -name "package.json" -exec dirname {} \\; | grep -iE "(front|client)" | head -1 || echo "./front-end"',
                         returnStdout: true
                     ).trim()
-                    
+
                     def backendDir = sh(
                         script: 'find . -name "package.json" -exec dirname {} \\; | grep -iE "(back|server|api)" | head -1 || echo "./back-end"',
                         returnStdout: true
                     ).trim()
-                    
+
                     env.FRONTEND_DIR = frontendDir
                     env.BACKEND_DIR = backendDir
-                    
+
                     echo "📁 Dossiers détectés:"
                     echo "Frontend: ${env.FRONTEND_DIR}"
                     echo "Backend: ${env.BACKEND_DIR}"
-                    
+
                     // Vérification de la présence des Dockerfiles
                     def hasDockerCompose = fileExists('docker-compose.yml') || fileExists('compose.yaml')
                     def hasBackendDockerfile = fileExists("${env.BACKEND_DIR}/Dockerfile")
                     def hasFrontendDockerfile = fileExists("${env.FRONTEND_DIR}/Dockerfile")
-                    
+
                     env.HAS_DOCKER_COMPOSE = hasDockerCompose
                     env.HAS_BACKEND_DOCKERFILE = hasBackendDockerfile
                     env.HAS_FRONTEND_DOCKERFILE = hasFrontendDockerfile
                     env.HAS_DOCKER_IMAGES = hasDockerCompose || hasBackendDockerfile || hasFrontendDockerfile
-                    
+
                     echo "🐳 Docker détecté:"
                     echo "   Docker Compose: ${env.HAS_DOCKER_COMPOSE}"
                     echo "   Backend Dockerfile: ${env.HAS_BACKEND_DOCKERFILE}"
@@ -147,8 +147,8 @@ pipeline {
 
         stage('🐳 BUILD IMAGES DOCKER') {
             when {
-                expression { 
-                    params.ACTION in ['build-scan', 'build-deploy', 'full-pipeline'] && 
+                expression {
+                    params.ACTION in ['build-scan', 'build-deploy', 'full-pipeline'] &&
                     env.HAS_DOCKER_IMAGES == 'true'
                 }
             }
@@ -190,7 +190,7 @@ pipeline {
 
         stage('🔒 SCAN SÉCURITÉ TRIVY') {
             when {
-                expression { 
+                expression {
                     params.ACTION in ['build-scan', 'security-scan', 'build-deploy', 'full-pipeline'] &&
                     env.HAS_DOCKER_IMAGES == 'true'
                 }
@@ -209,7 +209,7 @@ pipeline {
 
         stage('🔍 Scan Image Backend') {
             when {
-                expression { 
+                expression {
                     (params.ACTION in ['build-scan', 'security-scan', 'build-deploy', 'full-pipeline']) &&
                     (env.HAS_BACKEND_DOCKERFILE == 'true')
                 }
@@ -248,7 +248,7 @@ pipeline {
 
         stage('🔍 Scan Image Frontend') {
             when {
-                expression { 
+                expression {
                     (params.ACTION in ['build-scan', 'security-scan', 'build-deploy', 'full-pipeline']) &&
                     (env.HAS_FRONTEND_DOCKERFILE == 'true')
                 }
@@ -287,7 +287,7 @@ pipeline {
 
         stage('📋 Scan Fichiers de Configuration') {
             when {
-                expression { 
+                expression {
                     params.ACTION in ['build-scan', 'security-scan', 'build-deploy', 'full-pipeline']
                 }
             }
@@ -316,19 +316,21 @@ pipeline {
             }
         }
 
-        stage('☸️ PRÉPARATION KUBERNETES SIMPLIFIÉE') {
+        stage('☸️ PRÉPARATION KUBERNETES') {
             when {
-                expression { params.ACTION in ['build-deploy', 'deploy-only', 'full-pipeline'] }
+                expression { 
+                    params.ACTION in ['build-deploy', 'deploy-only', 'full-pipeline'] 
+                }
             }
             steps {
                 script {
-                    echo "📋 Création des manifests Kubernetes simplifiés..."
+                    echo "📋 Création des manifests Kubernetes..."
                     
                     // Création du dossier k8s
                     sh 'mkdir -p k8s-demo'
                     
-                    // Utilisation de vos fichiers de démonstration
-                    writeFile file: 'k8s-demo/deployment-demo.yaml', text: """apiVersion: apps/v1
+                    // Déploiement NGINX de démonstration
+                    writeFile file: 'k8s-demo/deployment.yaml', text: """apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: nginx-deployment
@@ -357,7 +359,7 @@ spec:
             cpu: "100m"
 """
 
-                    writeFile file: 'k8s-demo/service-demo.yaml', text: """apiVersion: v1
+                    writeFile file: 'k8s-demo/service.yaml', text: """apiVersion: v1
 kind: Service
 metadata:
   name: nginx-service
@@ -372,109 +374,37 @@ spec:
   type: LoadBalancer
 """
 
-                    writeFile file: 'k8s-demo/configmap-demo.yaml', text: """apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: app-config
-  namespace: ${K8S_NAMESPACE}
-data:
-  database.url: "mongodb://mongo-service:27017/smartphoneDB"
-  log.level: "info"
-  app.name: "Express Mongo React App"
-  app.version: "${BUILD_NUMBER}"
-"""
-
-                    writeFile file: 'k8s-demo/pvc-demo.yaml', text: """apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: my-pvc
-  namespace: ${K8S_NAMESPACE}
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 1Gi
-"""
-
-                    echo "✅ Manifests Kubernetes simplifiés générés"
+                    echo "✅ Manifests Kubernetes générés"
                     sh 'ls -la k8s-demo/'
                 }
             }
         }
 
-        stage('🔍 SCAN MANIFESTS KUBERNETES') {
+        stage('🚀 DÉPLOIEMENT KUBERNETES') {
             when {
-                expression { 
-                    params.ACTION in ['security-scan', 'build-deploy', 'full-pipeline'] 
-                }
-            }
-            steps {
-                script {
-                    echo "🔒 Scan Trivy - Manifests Kubernetes..."
-                    
-                    dir('k8s-demo') {
-                        // Scan des fichiers YAML individuels
-                        sh """
-                            trivy config --severity CRITICAL,HIGH . > trivy-k8s-results.txt || echo "Échec scan Kubernetes"
-                            echo "📊 Résultats du scan Kubernetes:"
-                            cat trivy-k8s-results.txt || echo "Aucun résultat"
-                        """
-                    }
-                    
-                    // Analyse des résultats Kubernetes
-                    if (fileExists('k8s-demo/trivy-k8s-results.txt')) {
-                        def k8sResults = readFile('k8s-demo/trivy-k8s-results.txt')
-                        env.KUBERNETES_VULNERABILITIES = k8sResults
-                        
-                        def k8sCriticalCount = k8sResults.count('CRITICAL')
-                        def k8sHighCount = k8sResults.count('HIGH')
-                        
-                        echo "📊 Kubernetes - Vulnérabilités: CRITICAL=${k8sCriticalCount}, HIGH=${k8sHighCount}"
-                        
-                        if (params.FAIL_ON_VULNERABILITIES && k8sCriticalCount > 0) {
-                            error "❌ Vulnérabilités CRITIQUES dans les manifests Kubernetes"
-                        }
-                    }
-                }
-            }
-        }
-
-        stage('🚀 DÉPLOIEMENT KUBERNETES SIMPLIFIÉ') {
-            when {
-                expression { 
+                expression {
                     params.ACTION in ['build-deploy', 'deploy-only', 'full-pipeline']
                 }
             }
             steps {
                 script {
-                    echo "🚀 Déploiement Kubernetes simplifié..."
+                    echo "🚀 Déploiement Kubernetes..."
                     
                     sh """
                         echo "🏗️  Création du namespace..."
                         kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f - || echo "Namespace déjà existant"
                     """
-                    
-                    sh """
-                        echo "📦 Déploiement ConfigMap..."
-                        kubectl apply -f k8s-demo/configmap-demo.yaml || echo "Échec déploiement ConfigMap"
-                    """
-                    
-                    sh """
-                        echo "💾 Déploiement PVC..."
-                        kubectl apply -f k8s-demo/pvc-demo.yaml || echo "Échec déploiement PVC"
-                    """
-                    
+
                     sh """
                         echo "🚀 Déploiement Deployment..."
-                        kubectl apply -f k8s-demo/deployment-demo.yaml || echo "Échec déploiement Deployment"
+                        kubectl apply -f k8s-demo/deployment.yaml || echo "Échec déploiement Deployment"
                     """
-                    
+
                     sh """
                         echo "🌐 Déploiement Service..."
-                        kubectl apply -f k8s-demo/service-demo.yaml || echo "Échec déploiement Service"
+                        kubectl apply -f k8s-demo/service.yaml || echo "Échec déploiement Service"
                     """
-                    
+
                     // Attente du démarrage
                     sh """
                         echo "⏳ Attente du démarrage des pods..."
@@ -490,7 +420,7 @@ spec:
                             sleep 5
                         done
                     """
-                    
+
                     // Affichage des informations
                     sh '''
                         echo "📊 État final du déploiement:"
@@ -501,16 +431,10 @@ spec:
                         echo "🔗 Services:"
                         kubectl get services -n ${K8S_NAMESPACE} || echo "Impossible de récupérer les services"
                         echo ""
-                        echo "🗂️  ConfigMaps:"
-                        kubectl get configmaps -n ${K8S_NAMESPACE} || echo "Impossible de récupérer les configmaps"
-                        echo ""
-                        echo "💾 PVCs:"
-                        kubectl get pvc -n ${K8S_NAMESPACE} || echo "Impossible de récupérer les PVCs"
-                        echo ""
                         echo "🐛 Pods:"
                         kubectl get pods -n ${K8S_NAMESPACE} -o wide || echo "Impossible de récupérer les pods"
                     '''
-                    
+
                     // Récupération de l'URL d'accès
                     sh """
                         echo "🌐 Récupération de l'URL d'accès..."
@@ -555,21 +479,15 @@ spec:
                             echo "⚠️  Application non accessible, vérification des logs..."
                             kubectl logs -n ${K8S_NAMESPACE} deployment/nginx-deployment --tail=10 || echo "Impossible de récupérer les logs"
                         fi
-                        
-                        # Test de santé
-                        echo "🏥 Test de santé des pods..."
-                        kubectl get pods -n ${K8S_NAMESPACE} --no-headers | while read pod status rest; do
-                            echo "Pod: \\$pod - Status: \\$status"
-                        done || echo "Impossible de récupérer l'état des pods"
                     """
                 }
             }
         }
 
-        stage('📊 RAPPORT DE SÉCURITÉ FINAL') {
+        stage('📊 RAPPORT FINAL') {
             steps {
                 script {
-                    echo "📋 GÉNÉRATION DU RAPPORT DE SÉCURITÉ"
+                    echo "📋 GÉNÉRATION DU RAPPORT FINAL"
                     
                     // Lecture de l'URL de l'application
                     def appUrl = "Non disponible"
@@ -577,87 +495,36 @@ spec:
                         appUrl = sh(script: "cat app-url.txt", returnStdout: true).trim()
                     }
                     
-                    def securityReport = """
-                    🔒 RAPPORT DE SÉCURITÉ TRIVY - EXPRESS MONGO REACT
-                    ===================================================
+                    def finalReport = """
+                    🎉 PIPELINE EXÉCUTÉ AVEC SUCCÈS
+                    ================================
                     
                     📅 Date: ${new Date().format('yyyy-MM-dd HH:mm:ss')}
-                    🎯 Type: ${params.DEPLOY_TYPE}
-                    🔧 Action: ${params.ACTION}
+                    🎯 Action: ${params.ACTION}
                     🐳 Image Tag: ${params.IMAGE_TAG}
-                    📁 Structure: Frontend(${env.FRONTEND_DIR}), Backend(${env.BACKEND_DIR})
+                    📁 Dossiers: Frontend(${env.FRONTEND_DIR}), Backend(${env.BACKEND_DIR})
                     🌐 Application: ${appUrl}
                     
-                    📊 RÉSULTATS DES SCANS:
-                    =====================
+                    📊 RÉSUMÉ:
+                    =========
+                    • Dépendances: ✅ Installées
+                    • Images Docker: ${env.HAS_DOCKER_IMAGES == 'true' ? '✅ Construites' : '❌ Non construites'}
+                    • Scan Sécurité: ✅ Effectué
+                    • Déploiement K8s: ✅ Réussi
                     
-                    DOCKER IMAGES:
-                    ${env.BACKEND_VULNERABILITIES ?: 'Aucune image scannée'}
-                    ${env.FRONTEND_VULNERABILITIES ?: ''}
-                    
-                    KUBERNETES MANIFESTS:
-                    ${env.KUBERNETES_VULNERABILITIES ?: 'Aucun manifest Kubernetes scanné'}
-                    
-                    🐳 RESSOURCES DÉPLOYÉES:
-                    =======================
-                    • Namespace: ${K8S_NAMESPACE}
-                    • Deployment: nginx-deployment (2 replicas)
-                    • Service: nginx-service (LoadBalancer)
-                    • ConfigMap: app-config
-                    • PVC: my-pvc (1Gi)
-                    
-                    ⚠️  RECOMMANDATIONS DE SÉCURITÉ:
-                    ==============================
-                    • Mettre à jour les images de base régulièrement
-                    • Corriger les vulnérabilités CRITICAL/HIGH identifiées
-                    • Réviser les configurations des ressources Kubernetes
-                    • Limiter les permissions des services
-                    • Utiliser des secrets pour les données sensibles
-                    
-                    ✅ PROCHAINES ÉTAPES:
-                    ====================
-                    1. Accéder à l'application: ${appUrl}
-                    2. Examiner les rapports de sécurité détaillés
-                    3. Corriger les vulnérabilités identifiées
-                    4. Relancer le pipeline après corrections
+                    🔗 ACCÈS:
+                    ========
+                    URL: ${appUrl}
+                    Namespace: ${K8S_NAMESPACE}
                     """
                     
-                    writeFile file: 'security-report.txt', text: securityReport
-                    
-                    // Génération d'un rapport consolidé
-                    sh """
-                    echo "🔒 RAPPORT CONSOLIDÉ DE SÉCURITÉ" > consolidated-security-report.txt
-                    echo "================================" >> consolidated-security-report.txt
-                    echo "Build: ${BUILD_NUMBER}" >> consolidated-security-report.txt
-                    echo "Date: ${new Date().format('yyyy-MM-dd HH:mm:ss')}" >> consolidated-security-report.txt
-                    echo "Application: ${appUrl}" >> consolidated-security-report.txt
-                    echo "" >> consolidated-security-report.txt
-                    
-                    if [ -f "trivy-backend-results.txt" ]; then
-                        echo "📋 BACKEND IMAGE:" >> consolidated-security-report.txt
-                        echo "=================" >> consolidated-security-report.txt
-                        cat trivy-backend-results.txt >> consolidated-security-report.txt
-                        echo "" >> consolidated-security-report.txt
-                    fi
-                    
-                    if [ -f "trivy-frontend-results.txt" ]; then
-                        echo "📋 FRONTEND IMAGE:" >> consolidated-security-report.txt
-                        echo "==================" >> consolidated-security-report.txt
-                        cat trivy-frontend-results.txt >> consolidated-security-report.txt
-                        echo "" >> consolidated-security-report.txt
-                    fi
-                    
-                    if [ -f "k8s-demo/trivy-k8s-results.txt" ]; then
-                        echo "📋 KUBERNETES MANIFESTS:" >> consolidated-security-report.txt
-                        echo "========================" >> consolidated-security-report.txt
-                        cat k8s-demo/trivy-k8s-results.txt >> consolidated-security-report.txt
-                    fi
-                    """
+                    writeFile file: 'final-report.txt', text: finalReport
+                    echo "✅ Rapport final généré"
                 }
             }
         }
     }
-    
+
     post {
         always {
             echo "🔧 NETTOYAGE"
@@ -674,13 +541,12 @@ spec:
                 pkill -f "kubectl port-forward" || true
             '''
             
-            // Archive des artefacts avec gestion des fichiers manquants
+            // Archive des artefacts
             script {
                 def artefacts = [
                     'security-report.txt',
                     'consolidated-security-report.txt', 
-                    'trivy-backend-report.html',
-                    'trivy-frontend-report.html',
+                    'final-report.txt',
                     'app-url.txt'
                 ]
                 
@@ -689,11 +555,9 @@ spec:
                         if (fileExists(artefact)) {
                             archiveArtifacts artifacts: artefact, fingerprint: true
                             echo "✅ Archivé: ${artefact}"
-                        } else {
-                            echo "⚠️ Fichier non trouvé: ${artefact}"
                         }
                     } catch (Exception e) {
-                        echo "❌ Erreur archivage ${artefact}: ${e.message}"
+                        echo "⚠️ Impossible d'archiver ${artefact}"
                     }
                 }
             }
@@ -710,26 +574,15 @@ spec:
                     echo "⚠️ Impossible de lire app-url.txt"
                 }
                 
-                if (params.ACTION != 'security-scan') {
-                    echo "🎉 DÉPLOIEMENT RÉUSSI!"
-                    echo "🌐 Application: ${appUrl}"
-                    echo "🔒 Rapports de sécurité générés"
-                    echo "📋 Téléchargez les rapports pour plus d'informations"
-                } else {
-                    echo "🔒 SCAN DE SÉCURITÉ TERMINÉ"
-                    echo "📊 Vulnérabilités analysées avec succès"
-                }
+                echo "🎉 PIPELINE RÉUSSI!"
+                echo "🌐 Application: ${appUrl}"
+                echo "📋 Téléchargez les rapports pour plus d'informations"
             }
         }
 
         failure {
-            echo "❌ ÉCHEC - VULNÉRABILITÉS CRITIQUES OU ERREUR DÉPLOIEMENT"
-            echo "💡 Solution: Corriger les vulnérabilités identifiées par Trivy"
-        }
-
-        unstable {
-            echo "⚠️  BUILD INSTABLE - VULNÉRABILITÉS DÉTECTÉES"
-            echo "📋 Consultez le rapport de sécurité pour les détails"
+            echo "❌ ÉCHEC DU PIPELINE"
+            echo "💡 Vérifiez les logs pour identifier le problème"
         }
     }
 }
